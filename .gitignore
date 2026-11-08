@@ -1,0 +1,45 @@
+# Entorno
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# dbt
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+dbt/.user.yml
+
+# Datos generados y temporales
+data/
+tmp/
+*.parquet
+*.duckdb
+logs/
+*.log
+
+# Editores y sistema
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Secretos locales
+*.pem
+*.key
+cloudflared/*.json

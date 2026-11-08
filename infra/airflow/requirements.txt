@@ -1,0 +1,8 @@
+# Versiones validadas en la fase 0. Cualquier cambio se prueba con el DAG de humo.
+astronomer-cosmos==1.16.0
+dbt-postgres>=1.8,<2.0
+psycopg[binary]>=3.2,<4
+pydantic>=2.7,<3
+pymongo>=4.8,<5
+requests>=2.32,<3
+tenacity>=8.5,<9

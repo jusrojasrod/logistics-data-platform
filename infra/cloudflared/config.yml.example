@@ -1,0 +1,10 @@
+# Copiar a config.yml y completar. El archivo con credenciales no se versiona.
+tunnel: nexora
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  - hostname: bi.example.invalid
+    service: http://127.0.0.1:8088
+  - hostname: airflow.example.invalid
+    service: http://127.0.0.1:8080
+  - service: http_status:404

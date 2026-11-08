@@ -1,0 +1,54 @@
+name: nexora
+
+# Perfil de extensión. La versión de Redpanda se valida al activar el perfil.
+services:
+  redpanda:
+    image: docker.redpanda.com/redpanda-data/redpanda:v24.3.18
+    container_name: nexora-redpanda
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - 1G
+      - --reserve-memory
+      - 0M
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092
+    ports:
+      - "127.0.0.1:9092:9092"
+      - "127.0.0.1:9644:9644"
+    volumes:
+      - redpanda:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    mem_limit: 1200m
+    restart: unless-stopped
+
+  gps-producer:
+    build:
+      context: .
+      dockerfile: infra/streaming/Dockerfile
+    container_name: nexora-gps-producer
+    command: ["python", "-m", "nexora.ingestion.streaming.producer"]
+    environment:
+      REDPANDA_BROKERS: redpanda:9092
+      NEXORA_SEED: ${NEXORA_SEED:-42}
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    mem_limit: 256m
+    profiles: ["streaming-app"]
+
+volumes:
+  redpanda:
