@@ -15,7 +15,7 @@
 
 ## Checklist
 
-- [ ] Autor y committer: una sola identidad
+- [ ] Autor: una sola identidad (el committer del squash puede ser GitHub)
 - [ ] Sin trailers de coautoría ni atribución a herramientas
 - [ ] Sin archivos fuera de la estructura pública
 - [ ] Sin empresas reales, personas reales ni datos personales
