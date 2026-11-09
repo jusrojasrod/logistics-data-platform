@@ -4,7 +4,7 @@ DBT ?= dbt
 
 .DEFAULT_GOAL := help
 
-.PHONY: help up up-bi up-streaming down reset ps logs lint format test dbt-parse dbt-build data export-superset clean
+.PHONY: help up up-bi up-streaming down reset ps logs lint format test dbt-parse dbt-build export-superset clean
 
 help: ## Muestra esta ayuda
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -46,9 +46,6 @@ dbt-parse: ## Valida el proyecto dbt
 
 dbt-build: ## Construye y prueba los modelos dbt
 	$(DBT) build --project-dir dbt --profiles-dir dbt
-
-data: ## Genera datos sintéticos: make data SCALE=demo
-	python -m nexora.generators.cli --scale $${SCALE:-demo} --seed $${SEED:-42} --out data/
 
 export-superset: ## Exporta dashboards de Superset a YAML
 	bash scripts/export_superset.sh
