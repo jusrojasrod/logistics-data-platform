@@ -34,6 +34,9 @@ dbt = [
     "dbt-postgres>=1.8,<2",
 ]
 
+[project.scripts]
+nexora-generate = "nexora.generators.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/nexora"]
 
