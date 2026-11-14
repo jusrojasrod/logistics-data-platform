@@ -51,7 +51,10 @@ Las capas y sus contratos están descritos en [`docs/04_architecture.md`](docs/0
 cp .env.example .env        # completar secretos locales
 make up                     # postgres, mongo, airflow
 make ps
+make data                   # datos sintéticos en data/demo (perfil por defecto)
 ```
+
+`make data SCALE=local` genera el perfil `local` en `data/local`. Cada perfil produce un CSV por entidad y el manifiesto de defectos, descritos en [`docs/03_data_dictionary.md`](docs/03_data_dictionary.md).
 
 Airflow queda en `http://localhost:8080`; Superset, en `http://localhost:8088` cuando se levanta el perfil de BI (`make up-bi`). Ningún servicio se expone fuera de la máquina local.
 
