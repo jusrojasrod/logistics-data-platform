@@ -1,0 +1,65 @@
+version: 2
+
+# Hecho de envíos. Solo tests genéricos nativos de dbt. Las claves de
+# dimensión pueden llegar nulas cuando el id natural es nulo; el test de
+# integridad referencial ignora los nulos y avisa (severity warn) como alerta
+# de DQ-004/DQ-005, sin miembro inferido.
+
+models:
+  - name: fact_shipments
+    description: >
+      Grano: una fila por envío válido (shipment_id), desde
+      stg_tms__shipments_valid. Fecha de negocio pickup_date, sin partición.
+      Guarda los ids naturales, las claves sustitutas de las cuatro
+      dimensiones y las banderas closed_flag, on_time_flag, in_full_flag y
+      otif_flag. Sin columnas financieras.
+    columns:
+      - name: shipment_id
+        description: "Identificador natural del envío; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: pickup_date
+        description: "Fecha de negocio: fecha de recogida."
+        data_tests:
+          - not_null
+      - name: closed_flag
+        description: "Envío entregado o con fallo definitivo; nunca nulo."
+        data_tests:
+          - not_null
+      - name: customer_key
+        description: "Clave sustituta del cliente; nula si customer_id llega nulo (DQ-004)."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_key
+              config:
+                severity: warn
+      - name: carrier_key
+        description: "Clave sustituta del transportista; nula si carrier_id llega nulo (DQ-005)."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_carrier')
+                field: carrier_key
+              config:
+                severity: warn
+      - name: route_key
+        description: "Clave sustituta de la ruta."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_route')
+                field: route_key
+              config:
+                severity: warn
+      - name: service_type_key
+        description: "Clave sustituta del tipo de servicio."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_service_type')
+                field: service_type_key
+              config:
+                severity: warn
