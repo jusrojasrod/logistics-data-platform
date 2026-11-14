@@ -44,6 +44,11 @@ Cada dataset declara `freshness_slo_minutes` en `meta.datasets`. Un dataset sin 
 | DQ-014 | `tender_id` único y con respuesta o marca de expiración | Completitud | 100 % | Alerta |
 | DQ-015 | Miembros inferidos con más de 7 días | Consistencia | 0 | Alerta |
 
+### 3.1 Columnas evaluadas en envíos
+
+- **DQ-003** se evalúa sobre `delivered_weight_kg` de `stg_tms__shipments_validated`, que es la `weight_kg` del catálogo: el peso entregado en kilogramos. Los nulos de envíos sin entrega no cuentan. La regla no cambia: sigue siendo una alerta (`dbt/tests/assert_delivered_weight_range.sql`, `severity: warn`), que avisa con cada envío fuera de rango y no entra en la partición válidos/cuarentena.
+- **DQ-011** se evalúa como proporción de `promised_delivery_ts` no nulo en `stg_tms__shipments_validated` frente al umbral de 99 % (`dbt/tests/assert_promised_delivery_proportion.sql`, `severity: warn`). Los envíos con la fecha nula se conservan.
+
 ## 4. Separación de válidos e inválidos
 
 Los tests de dbt marcan fallos, pero no separan filas. La separación se hace en staging:
