@@ -24,6 +24,10 @@ models:
       +schema: core
       +materialized: table
       +tags: ["core"]
+    quarantine:
+      +schema: quarantine
+      +materialized: table
+      +tags: ["staging"]
     marts:
       +schema: marts
       +materialized: table

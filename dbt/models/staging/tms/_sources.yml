@@ -1,0 +1,155 @@
+version: 2
+
+# Fuentes sobre el esquema raw. No se declaran tests de fuente: los defectos
+# de calidad son intencionales y se clasifican en staging y cuarentena.
+
+sources:
+  - name: tms
+    description: "Sistema de gestión de transporte: envíos, transportistas, rutas y tipos de servicio cargados en raw."
+    schema: raw
+    tables:
+      - name: shipments
+        description: "Envíos tal como llegan del archivo fuente; append-only, puede contener duplicados y fechas imposibles."
+        columns:
+          - name: shipment_id
+            description: "Identificador natural del envío."
+          - name: customer_id
+            description: "Cliente del envío; puede llegar nulo."
+          - name: carrier_id
+            description: "Transportista asignado; puede llegar nulo."
+          - name: route_id
+            description: "Ruta del envío."
+          - name: service_type_id
+            description: "Tipo de servicio contratado."
+          - name: pickup_ts
+            description: "Fecha y hora programada de recogida."
+          - name: pickup_date
+            description: "Fecha de negocio del envío."
+          - name: promised_delivery_ts
+            description: "Fecha y hora prometida de entrega; puede llegar nula."
+          - name: picked_up_at
+            description: "Fecha y hora real de recogida."
+          - name: delivered_at
+            description: "Fecha y hora real de entrega; nula si no se entregó."
+          - name: ordered_qty
+            description: "Piezas pedidas."
+          - name: delivered_qty
+            description: "Piezas entregadas."
+          - name: ordered_weight_kg
+            description: "Peso pedido en kilogramos."
+          - name: delivered_weight_kg
+            description: "Peso entregado en kilogramos."
+          - name: definitive_failure_flag
+            description: "Verdadero si el envío terminó en fallo definitivo."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el cargador."
+          - name: source_file
+            description: "Nombre del archivo cargado."
+          - name: source_file_hash
+            description: "SHA-256 del archivo cargado."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: carriers
+        description: "Transportistas."
+        columns:
+          - name: carrier_id
+            description: "Identificador natural del transportista."
+          - name: carrier_name
+            description: "Nombre del transportista."
+          - name: carrier_type
+            description: "Tipo de transportista."
+          - name: service_level
+            description: "Nivel de servicio."
+          - name: rate_index
+            description: "Índice relativo de tarifa."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el cargador."
+          - name: source_file
+            description: "Nombre del archivo cargado."
+          - name: source_file_hash
+            description: "SHA-256 del archivo cargado."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: routes
+        description: "Rutas origen-destino."
+        columns:
+          - name: route_id
+            description: "Identificador natural de la ruta."
+          - name: origin_city
+            description: "Ciudad de origen."
+          - name: destination_city
+            description: "Ciudad de destino."
+          - name: distance_km
+            description: "Distancia en kilómetros."
+          - name: estimated_hours
+            description: "Horas estimadas de tránsito."
+          - name: road_type
+            description: "Tipo de vía."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el cargador."
+          - name: source_file
+            description: "Nombre del archivo cargado."
+          - name: source_file_hash
+            description: "SHA-256 del archivo cargado."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: service_types
+        description: "Tipos de servicio con su SLA."
+        columns:
+          - name: service_type_id
+            description: "Identificador natural del tipo de servicio."
+          - name: service_type_name
+            description: "Nombre del tipo de servicio."
+          - name: sla_hours
+            description: "Horas comprometidas de entrega."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el cargador."
+          - name: source_file
+            description: "Nombre del archivo cargado."
+          - name: source_file_hash
+            description: "SHA-256 del archivo cargado."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+  - name: erp
+    description: "Sistema ERP: maestro de clientes cargado en raw."
+    schema: raw
+    tables:
+      - name: customers
+        description: "Clientes."
+        columns:
+          - name: customer_id
+            description: "Identificador natural del cliente."
+          - name: customer_name
+            description: "Nombre del cliente (ficticio)."
+          - name: segment
+            description: "Segmento comercial."
+          - name: industry
+            description: "Industria."
+          - name: region
+            description: "Región."
+          - name: city
+            description: "Ciudad."
+          - name: payment_term_days
+            description: "Plazo de pago en días."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el cargador."
+          - name: source_file
+            description: "Nombre del archivo cargado."
+          - name: source_file_hash
+            description: "SHA-256 del archivo cargado."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
