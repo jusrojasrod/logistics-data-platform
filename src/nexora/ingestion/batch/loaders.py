@@ -7,6 +7,10 @@ contract declared here, never inferred from the CSV. Every loaded row carries
 the execution metadata ``run_id``, ``source_system``, ``source_file`` (file name
 only, never a path), ``source_file_hash`` (SHA-256 of the file) and
 ``ingested_at``.
+
+Loading is idempotent per file: if the SHA-256 of a CSV file is already present
+in ``source_file_hash`` of its target table, the file is skipped and nothing is
+inserted. The skip decision is the pure function :func:`should_skip`.
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ import argparse
 import csv
 import hashlib
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -176,6 +180,12 @@ class LoadResult:
     source_file: str
     source_file_hash: str
     rows: int
+    skipped: bool = False
+
+
+def should_skip(file_hash: str, loaded_hashes: Collection[str]) -> bool:
+    """Return whether a file must be skipped because its hash is already loaded."""
+    return file_hash in loaded_hashes
 
 
 def file_sha256(path: str | Path) -> str:
@@ -203,6 +213,17 @@ def check_header(table: RawTable, path: str | Path) -> None:
         )
 
 
+def loaded_hashes(cur: psycopg.Cursor, table: RawTable, file_hash: str) -> set[str]:
+    """Return the hashes of ``table`` equal to ``file_hash`` (empty if not loaded)."""
+    cur.execute(
+        sql.SQL("select source_file_hash from {table} where source_file_hash = %s limit 1").format(
+            table=table.identifier
+        ),
+        (file_hash,),
+    )
+    return {row[0] for row in cur.fetchall()}
+
+
 def _staging_statement(table: RawTable, staging: sql.Identifier) -> sql.Composed:
     definitions = [
         sql.SQL(" ").join([sql.Identifier(column.name), sql.SQL(column.sql_type)])
@@ -225,7 +246,9 @@ def load_file(
 
     The file is copied into a typed temporary table, so values are cast by
     PostgreSQL against the contract types, and then appended to the raw table
-    with the execution metadata.
+    with the execution metadata. If the file hash is already in the target table
+    the file is skipped. The table is locked for the transaction so two
+    concurrent loads of the same file cannot both insert it.
     """
     source = Path(path)
     check_header(table, source)
@@ -239,6 +262,17 @@ def load_file(
 
     with conn.transaction(), conn.cursor() as cur:
         cur.execute(table.create_statement())
+        cur.execute(
+            sql.SQL("lock table {table} in share row exclusive mode").format(table=table.identifier)
+        )
+        if should_skip(source_file_hash, loaded_hashes(cur, table, source_file_hash)):
+            return LoadResult(
+                table=f"{RAW_SCHEMA}.{table.name}",
+                source_file=source.name,
+                source_file_hash=source_file_hash,
+                rows=0,
+                skipped=True,
+            )
         cur.execute(_staging_statement(table, staging))
         copy_statement = sql.SQL(
             "copy {staging} ({columns}) from stdin with (format csv, header true)"
@@ -312,10 +346,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     with psycopg.connect(dsn) as conn:
         results = load_directory(conn, args.input, run_id=args.run_id)
     for result in results:
-        print(
-            f"cargado: {result.table} <- {result.source_file} "
-            f"({result.rows} filas, sha256 {result.source_file_hash[:12]})"
-        )
+        if result.skipped:
+            print(
+                f"omitido: {result.table} <- {result.source_file} "
+                f"(sha256 {result.source_file_hash[:12]} ya cargado, 0 filas)"
+            )
+        else:
+            print(
+                f"cargado: {result.table} <- {result.source_file} "
+                f"({result.rows} filas, sha256 {result.source_file_hash[:12]})"
+            )
     return 0
 
 
