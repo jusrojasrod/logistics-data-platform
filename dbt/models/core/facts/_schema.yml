@@ -28,7 +28,7 @@ models:
         data_tests:
           - not_null
       - name: customer_key
-        description: "Clave sustituta del cliente; nula si customer_id llega nulo (DQ-004)."
+        description: "Clave sustituta del cliente; nula si customer_id llega nulo (DQ-005)."
         data_tests:
           - relationships:
               arguments:
@@ -37,7 +37,7 @@ models:
               config:
                 severity: warn
       - name: carrier_key
-        description: "Clave sustituta del transportista; nula si carrier_id llega nulo (DQ-005)."
+        description: "Clave sustituta del transportista; nula si carrier_id llega nulo (DQ-004)."
         data_tests:
           - relationships:
               arguments:
