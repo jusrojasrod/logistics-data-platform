@@ -21,8 +21,8 @@ from nexora.generators.shipments import (
     generate_shipments,
 )
 
-# Distinct base shipments per volume profile (D-002). Injected duplicates are
-# written on top of this base.
+# Distinct base shipments per volume profile: 50 000 in demo, 200 000 in local.
+# Injected duplicates are written on top of this base.
 SCALE_SHIPMENTS: dict[str, int] = {
     "demo": 50_000,
     "local": 200_000,

@@ -89,6 +89,7 @@ tests/         unitarios, integración y contrato
 
 - [Contexto de negocio](docs/01_business_context.md)
 - [Catálogo de KPIs](docs/02_kpi_catalog.md)
+- [Diccionario de datos](docs/03_data_dictionary.md)
 - [Arquitectura](docs/04_architecture.md)
 - [Reglas de calidad](docs/06_quality_rules.md)
 - [Gobierno de datos](docs/05_governance_policy.md)

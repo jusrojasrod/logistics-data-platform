@@ -12,8 +12,8 @@ Shapes of the generated population:
   by the month seasonality and the weekday;
 * customer demand is concentrated on the head of the catalog, owned carriers
   move more volume than third parties and primary roads carry more shipments;
-* the promised timestamp is the tighter of the service SLA and the road transit
-  plus handling, and a share of deliveries misses that window;
+* the promised timestamp uses the larger window of the service SLA and the road
+  transit plus handling, and a share of deliveries misses that window;
 * a shipment whose transit ends after the cutoff is still in transit: it has no
   delivery timestamp and is not a definitive failure;
 * ``delivered_qty`` and ``delivered_weight_kg`` are set only when there is a
@@ -69,7 +69,8 @@ SHIPMENTS_COLUMNS: tuple[str, ...] = (
 
 # Local business time of the operation. Pickups between 06:00 and 17:59 local
 # stay on the same calendar day in UTC, so ``pickup_date`` matches
-# ``pickup_ts::date`` whatever time zone the reading session sets.
+# ``pickup_ts::date`` in UTC sessions (the database default) and in UTC-5
+# sessions. Other session time zones can shift the date.
 LOCAL_TIMEZONE = timezone(timedelta(hours=-5))
 PICKUP_LOCAL_HOUR_RANGE: tuple[int, int] = (6, 17)
 
@@ -88,8 +89,8 @@ PICKUP_ON_TIME_MINUTES: tuple[int, int] = (0, 20)
 PICKUP_LATE_RATE: float = 0.12
 PICKUP_LATE_MINUTES: tuple[int, int] = (25, 240)
 
-# The promise is the tighter of the contractual SLA and the road transit, so no
-# shipment is promised a delivery the operation cannot physically make.
+# The promise uses the larger window of the contractual SLA and the road transit,
+# so no shipment is promised a delivery the operation cannot physically make.
 PROMISE_BUFFER_HOURS: float = 2.0
 
 # Transit multiplier over the promised window: on-time deliveries finish inside
@@ -332,7 +333,7 @@ def _pickup_delay_minutes(rng: Random) -> int:
 
 
 def _promise_hours(route: RouteProfile, service: ServiceProfile) -> float:
-    """Return the promised window, in hours: SLA or road transit, the tighter."""
+    """Return the promised window, in hours: the larger of SLA and road transit."""
     return max(float(service.sla_hours), route.estimated_hours + PROMISE_BUFFER_HOURS)
 
 

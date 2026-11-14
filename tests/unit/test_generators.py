@@ -229,8 +229,9 @@ def test_scale_profiles_are_declared() -> None:
 def test_local_profile_requests_its_volume(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """El CLI pide 200 000 envíos con ``local`` sin generarlos en la prueba.
 
-    Generar ``local`` completo cuesta unos 3 s; aquí se intercepta la llamada,
-    se registra el volumen pedido y se generan 300 filas para el resto del flujo.
+    La prueba solo comprueba el volumen pedido y no necesita las 200 000 filas;
+    aquí se intercepta la llamada, se registra el volumen pedido y se generan
+    300 filas para el resto del flujo.
     """
     requested: list[int] = []
     real_generate = cli.generate_shipments
@@ -266,7 +267,7 @@ def test_dimension_files_are_not_empty(demo_dir: Path) -> None:
         assert rows, name
 
 
-# Tasas del manifiesto (C4)
+# Tasas del manifiesto
 
 
 def test_manifest_entries_follow_schema(manifest: dict[str, Any]) -> None:
