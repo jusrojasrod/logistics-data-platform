@@ -375,3 +375,92 @@ where payload->>'shipment_id' = '<id>';
 ```
 
 Un rechazo por DQ-002 no aparece ni en `stg_tms__shipments_valid` ni en `fact_shipments`. Un duplicado por DQ-001 aparece en cuarentena y conserva exactamente una copia en los válidos y en el hecho.
+
+## 10. `marts`
+
+Los marts son agregados de consumo construidos por dbt a partir de `core`; no son hechos. Se materializan como tablas en el esquema `marts` y se reconstruyen en cada `dbt build`. Son la única capa que lee el BI.
+
+### 10.1 `marts.mart_operations`
+
+Grano: una fila por combinación **observada** de `pickup_date` × `customer_key` × `route_key` en `core.fact_shipments`, es decir, con al menos un envío, tenga o no envíos cerrados. No se genera rejilla completa: una combinación sin envíos no tiene fila. Las claves nulas que llegan del hecho (§8) se conservan como su propio grupo, para que las sumas del mart cuadren con el hecho.
+
+Solo guarda conteos aditivos, que se pueden sumar por cualquier subconjunto de días, clientes o rutas.
+
+| Columna | Tipo | Garantía | Descripción |
+|---|---|---|---|
+| `pickup_date` | `date` | `not_null`; parte del grano | Fecha de negocio: fecha de la recogida planificada del envío |
+| `customer_key` | `text` | parte del grano | Clave sustituta del cliente; nula si el envío llega sin cliente (DQ-005) |
+| `route_key` | `text` | parte del grano | Clave sustituta de la ruta; nula si el envío llega sin ruta |
+| `closed_shipments` | `bigint` | — | Envíos cerrados del grupo: conteo de `closed_flag` verdadero. Denominador del OTIF |
+| `otif_shipments` | `bigint` | — | Envíos a tiempo y completos del grupo: conteo de `otif_flag` verdadero. Numerador del OTIF |
+| `on_time_shipments` | `bigint` | — | Envíos entregados a tiempo del grupo: conteo de `on_time_flag` verdadero |
+| `in_full_shipments` | `bigint` | — | Envíos entregados completos del grupo: conteo de `in_full_flag` verdadero |
+
+Las banderas nulas de los envíos abiertos no suman en ningún conteo. Como en `core`, `information_schema` muestra todas las columnas como nulables; las garantías salen del modelo y de los tests.
+
+Tests del mart:
+
+| Test | Qué comprueba |
+|---|---|
+| `dbt_utils.unique_combination_of_columns` | Una sola fila por `pickup_date`, `customer_key` y `route_key`; agrupa los nulos como iguales, así que también cubre los grupos con clave nula |
+| `not_null` de `pickup_date` | Toda fila tiene fecha de negocio |
+| `dbt/tests/assert_mart_reconciles_fact_shipments.sql` | Las sumas de `closed_shipments`, `otif_shipments`, `on_time_shipments` e `in_full_shipments` coinciden con los conteos de `closed_flag`, `otif_flag`, `on_time_flag` e `in_full_flag` verdaderos en `core.fact_shipments` |
+
+### 10.2 OTIF: un porcentaje que no se almacena
+
+El mart no guarda ningún porcentaje. El OTIF de cualquier periodo o segmento se calcula al consultar como razón de sumas:
+
+```text
+OTIF = Σ otif_shipments / Σ closed_shipments
+```
+
+- Nunca se promedian porcentajes diarios ni por grupo: el resultado cambiaría con el número de filas de cada grupo.
+- Si el denominador es 0 (sin envíos cerrados en el periodo o segmento), el resultado es `NULL`, nunca 0. El dashboard lo muestra como sin datos.
+- `otif_pct` de la consulta de referencia `benchmarks/queries/otif_monthly.sql` (columnas `month` y `otif_pct`, sobre todo el histórico) y la métrica «OTIF %» del dataset de Superset (`metric_name: otif_pct`) son una **razón entre 0 y 1**, no un valor de 0 a 100. Superset la muestra como porcentaje con el formato `.1%`; quien la reutilice en otra escala multiplica por 100 al presentar.
+
+```sql
+select
+    date_trunc('month', pickup_date)::date as month,
+    sum(otif_shipments)::numeric / nullif(sum(closed_shipments), 0) as otif_pct
+from marts.mart_operations
+group by date_trunc('month', pickup_date)
+order by month;
+```
+
+### 10.3 Permisos de lectura
+
+La carpeta `marts` de `dbt/dbt_project.yml` declara `+grants: {select: ['bi_reader']}`: en cada `dbt build`, dbt vuelve a conceder `SELECT` sobre los marts al rol de solo lectura `bi_reader`, que es el usuario de la conexión de Superset. `bi_reader` no recibe permisos sobre `raw`, `stg`, `quarantine` ni `core` desde dbt.
+
+```sql
+select grantee, privilege_type
+from information_schema.role_table_grants
+where table_schema = 'marts' and table_name = 'mart_operations';
+```
+
+### 10.4 Linaje hasta el dashboard
+
+```text
+raw.shipments ─► stg.stg_tms__shipments ─► stg.stg_tms__shipments_validated ─► stg.stg_tms__shipments_valid
+  ─► core.fact_shipments ─► marts.mart_operations
+  ─► dataset mart_operations (métrica «OTIF %») ─► chart «OTIF mensual» ─► dashboard «Operación»
+```
+
+| Objeto | Capa | Definición versionada | Origen |
+|---|---|---|---|
+| `marts.mart_operations` | `marts` | `dbt/models/marts/operations/mart_operations.sql` | `core.fact_shipments` |
+| Consulta de referencia | — | `benchmarks/queries/otif_monthly.sql` | `marts.mart_operations` |
+| Conexión `nexora` | Superset | `dashboards/superset/databases/nexora_postgres.yaml` | Base `nexora` con el rol `bi_reader`; la contraseña se fija al importar |
+| Dataset `mart_operations` | Superset | `dashboards/superset/datasets/mart_operations.yaml` | Solo `marts.mart_operations`; no lee `raw` ni `stg` |
+| Chart «OTIF mensual» | Superset | `dashboards/superset/charts/otif_monthly.yaml` | Dataset `mart_operations`: línea con `pickup_date` agrupado por mes y la métrica «OTIF %» |
+| Dashboard «Operación» | Superset | `dashboards/superset/dashboards/operations_overview.yaml` | Chart «OTIF mensual», con el filtro «Mes» sobre `pickup_date` |
+
+Los objetos de Superset se cargan con `make import-superset`. Para seguir un envío hasta el mart, se une por las tres claves del grano:
+
+```sql
+select m.*
+from core.fact_shipments f
+join marts.mart_operations m using (pickup_date, customer_key, route_key)
+where f.shipment_id = '<id>';
+```
+
+Un envío con `customer_key` o `route_key` nulo no casa con `using`, porque `NULL` no es igual a `NULL`; en ese caso se une con `is not distinct from` en las tres columnas.
