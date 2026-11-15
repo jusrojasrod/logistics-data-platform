@@ -5,7 +5,7 @@ SCALE ?= demo
 
 .DEFAULT_GOAL := help
 
-.PHONY: help up up-bi up-streaming down reset ps logs lint format test dbt-parse dbt-build data export-superset clean
+.PHONY: help up up-bi up-streaming down reset ps logs lint format test dbt-parse dbt-build data export-superset import-superset clean
 
 help: ## Muestra esta ayuda
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -53,6 +53,9 @@ data: ## Genera datos sintéticos en data/<SCALE>: make data SCALE=demo|local
 
 export-superset: ## Exporta dashboards de Superset a YAML
 	bash scripts/export_superset.sh
+
+import-superset: ## Importa en Superset los dashboards versionados en YAML
+	bash scripts/import_superset.sh
 
 clean: ## Limpia artefactos locales
 	rm -rf .pytest_cache .ruff_cache htmlcov .coverage dbt/target dbt/logs data/tmp
