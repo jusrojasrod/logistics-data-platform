@@ -42,6 +42,12 @@ for folder in "${FOLDERS[@]}"; do
     cp "${SRC_DIR}/${folder}"/*.yaml "${BUNDLE_ROOT}/${folder}/"
 done
 
+# Con la URI enmascarada, Superset exige `password` al crear la base; se añade
+# solo a la copia temporal del bundle, nunca al YAML versionado.
+BI_READER_PASSWORD="${BI_READER_PASSWORD:-bi_reader_dev}" "${PYTHON}" -c \
+    'import json, os, sys; open(sys.argv[1], "a").write("password: " + json.dumps(os.environ["BI_READER_PASSWORD"]) + "\n")' \
+    "${BUNDLE_ROOT}/databases/nexora_postgres.yaml"
+
 cat > "${BUNDLE_ROOT}/metadata.yaml" <<EOF
 version: 1.0.0
 type: Dashboard
