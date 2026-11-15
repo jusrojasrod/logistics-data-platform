@@ -16,8 +16,6 @@ inserted. The skip decision is the pure function :func:`should_skip`.
 from __future__ import annotations
 
 import argparse
-import csv
-import hashlib
 import uuid
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
@@ -28,13 +26,12 @@ import psycopg
 from psycopg import sql
 
 from nexora.common.config import settings
+from nexora.ingestion.batch.readers import HASH_CHUNK_BYTES, check_header, file_sha256
 
 RAW_SCHEMA: str = "raw"
 
 ERP_SOURCE_SYSTEM: str = "erp"
 TMS_SOURCE_SYSTEM: str = "tms"
-
-HASH_CHUNK_BYTES: int = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -186,31 +183,6 @@ class LoadResult:
 def should_skip(file_hash: str, loaded_hashes: Collection[str]) -> bool:
     """Return whether a file must be skipped because its hash is already loaded."""
     return file_hash in loaded_hashes
-
-
-def file_sha256(path: str | Path) -> str:
-    """Return the SHA-256 hex digest of the file contents."""
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(HASH_CHUNK_BYTES), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def read_header(path: str | Path) -> tuple[str, ...]:
-    """Return the header row of a CSV file."""
-    with Path(path).open(encoding="utf-8", newline="") as handle:
-        return tuple(next(csv.reader(handle), ()))
-
-
-def check_header(table: RawTable, path: str | Path) -> None:
-    """Fail if the CSV header does not match the contract column order."""
-    header = read_header(path)
-    if header != table.column_names:
-        raise ValueError(
-            f"{Path(path).name}: cabecera {list(header)} distinta del contrato "
-            f"{list(table.column_names)}"
-        )
 
 
 def loaded_hashes(cur: psycopg.Cursor, table: RawTable, file_hash: str) -> set[str]:

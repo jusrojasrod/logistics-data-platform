@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from nexora.ingestion.batch.loaders import HASH_CHUNK_BYTES, file_sha256, should_skip
+from nexora.ingestion.batch.loaders import should_skip
+from nexora.ingestion.batch.readers import HASH_CHUNK_BYTES, file_sha256
 
 SAMPLE_BYTES = b"shipment_id,customer_id\nSHP-000001,CUS-0001\n"
 
