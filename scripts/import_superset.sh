@@ -6,6 +6,13 @@
 # lo importa con `superset import-dashboards` y fija la URI de la base `nexora`,
 # porque el YAML versionado lleva la contraseña enmascarada.
 #
+# `superset import-dashboards` no sobrescribe los charts que ya existen: su
+# importador llama a `import_chart` con `overwrite=False`. Por eso, con el
+# mismo bundle, se vuelven a importar los charts con `ImportChartsCommand` v1 y
+# `overwrite=True` (con `metadata.yaml` reescrito en memoria a `type: Slice`),
+# para que el valor de los YAML llegue a los charts existentes. Ese comando no
+# sobrescribe la base ni el dataset e ignora la carpeta `dashboards/`.
+#
 # Al terminar, comprueba en Superset por uuid que existen la base, el dataset,
 # el chart y el dashboard de los YAML e imprime su tipo y nombre.
 #
@@ -114,6 +121,46 @@ REMOTE_COPIED="1"
 docker cp "${BUNDLE_ZIP}" "${CONTAINER}:${REMOTE_ZIP}"
 docker exec "${CONTAINER}" superset import-dashboards \
     --path "${REMOTE_ZIP}" --username "${SUPERSET_USER}"
+
+# Sobrescribe los charts existentes con los YAML del bundle; sale con 1 si falla.
+docker exec -i "${CONTAINER}" /app/.venv/bin/python - \
+    "${REMOTE_ZIP}" "${SUPERSET_USER}" <<'PY'
+import sys
+from zipfile import ZipFile
+
+import yaml
+from flask import g
+
+from superset.app import create_app
+
+app = create_app()
+with app.app_context():
+    from superset.commands.chart.importers.v1 import ImportChartsCommand
+    from superset.commands.importers.v1.utils import get_contents_from_bundle
+    from superset.extensions import security_manager
+
+    path, username = sys.argv[1:3]
+    g.user = security_manager.find_user(username=username)
+    if g.user is None:
+        print(f"Error: no existe el usuario {username}", file=sys.stderr)
+        sys.exit(1)
+
+    with ZipFile(path) as bundle:
+        contents = get_contents_from_bundle(bundle)
+    metadata = yaml.safe_load(contents["metadata.yaml"])
+    metadata["type"] = "Slice"
+    contents["metadata.yaml"] = yaml.safe_dump(metadata)
+
+    try:
+        ImportChartsCommand(contents, overwrite=True).run()
+    except Exception as exc:  # noqa: BLE001
+        details = getattr(exc, "normalized_messages", lambda: "")()
+        print(f"Error al sobrescribir los charts: {exc} {details}", file=sys.stderr)
+        sys.exit(1)
+    charts = sorted(name for name in contents if name.startswith("charts/"))
+    print(f"Charts sobrescritos: {', '.join(charts)}")
+PY
+
 docker exec "${CONTAINER}" rm -f "${REMOTE_ZIP}"
 REMOTE_COPIED=""
 

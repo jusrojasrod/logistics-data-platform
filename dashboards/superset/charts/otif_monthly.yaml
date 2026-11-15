@@ -29,7 +29,7 @@ params:
   x_axis_title: Mes
   x_axis_title_margin: 15
   y_axis_title: OTIF %
-  y_axis_title_margin: 30
+  y_axis_title_margin: 50
   y_axis_title_position: Left
   seriesType: line
   markerEnabled: true
