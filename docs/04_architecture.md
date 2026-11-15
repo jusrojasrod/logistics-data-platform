@@ -45,17 +45,27 @@ Orquestación: Apache Airflow 3. Transformación: dbt. Todo corre en contenedore
 | Cuarentena | `quarantine` | Conservar rechazos | `rule_id`, `reason`, `payload`, `run_id`, `detected_at` |
 | Core | `core` | Modelo dimensional | Grano declarado, claves sustitutas, SCD2 donde aplica |
 | Marts | `marts` | Consumo | Agregados estables; ningún consumidor lee `raw` |
-| Metadatos | `meta` | Gobierno y operación | Catálogo, reglas, resultados, linaje, accesos, ejecuciones |
+| Metadatos | `meta` | Gobierno y operación | Catálogo, reglas, resultados, linaje, accesos, ejecuciones; watermarks de extracción (`meta.batch_watermarks`) y registro de archivos cargados (`meta.ingested_files`) |
 
 ## 3. Flujo
 
-1. Airflow dispara la extracción según el calendario del dominio.
-2. Los datos aterrizan en `raw` con metadatos de ingestión.
-3. Staging tipa, deduplica y valida; separa válidos y rechazados.
-4. dbt construye dimensiones, hechos y puente en `core`, y agregados en `marts`.
-5. Las reglas de calidad calculan el scorecard sobre lo publicado.
-6. Superset consume `marts` con un usuario de solo lectura.
-7. La observabilidad monitorea frescura, volumen, fallos y SLA.
+```text
+generador ─► CSV de envíos y dimensiones TMS ─► publicador (tms_writer) ─► tms.<tabla> ─► conector por watermark (etl_writer) ─► raw.<tabla>
+generador ─► customers.csv (ERP) ─────────────────────────────────────────────────────► conector por hash (etl_writer) ──────► raw.customers
+```
+
+1. El generador escribe los CSV de cada perfil. El publicador inserta los envíos y las dimensiones TMS en el esquema `tms`, que simula la base operativa del TMS: solo inserciones, con `updated_at` del reloj de la base en cada fila.
+2. Airflow dispara la ingesta según el calendario del dominio. `dag_ingest_batch` corre con el calendario `0 2 * * *`, sin catchup, con una ejecución activa a la vez y 3 reintentos por tarea.
+3. La tarea `extract_tms` extrae cada `tms.<tabla>` a `raw.<tabla>` con la ventana `(watermark, max(updated_at)]`; en la misma transacción inserta en `raw` y avanza `meta.batch_watermarks`. Sin filas nuevas no inserta nada.
+4. La tarea `load_erp_files` carga los `customers*.csv` en `raw.customers`; un archivo cuyo SHA-256 ya está en `meta.ingested_files` se omite.
+5. Los datos aterrizan en `raw` con metadatos de ingestión (`run_id`, `source_system`, `source_file`, `source_file_hash`, `ingested_at`). Las tareas del DAG solo llaman a los conectores de `src/nexora/ingestion/batch`: no contienen lógica de negocio.
+6. Staging tipa, deduplica y valida; separa válidos y rechazados.
+7. dbt construye dimensiones, hechos y puente en `core`, y agregados en `marts`.
+8. Las reglas de calidad calculan el scorecard sobre lo publicado.
+9. Superset consume `marts` con un usuario de solo lectura.
+10. La observabilidad monitorea frescura, volumen, fallos y SLA.
+
+El detalle de `tms`, de las dos vías de llegada a `raw` y de las tablas de `meta` está en [`03_data_dictionary.md`](03_data_dictionary.md) §1.1, §2.2 y §2.8.
 
 ## 4. Componentes
 
@@ -91,7 +101,20 @@ Los detalles y alternativas están en [`adr/`](adr/).
 
 ## 7. Seguridad
 
-- Roles de base de datos separados: ETL, BI de solo lectura y calidad.
+Roles de base de datos separados, creados por `infra/postgres/init/02_roles.sql`:
+
+| Rol | Uso | Permisos |
+|---|---|---|
+| `tms_writer` | Publicador del OLTP simulado | `USAGE` y `CREATE` en `tms`; es el dueño de las tablas `tms.*` y el único que escribe en ellas. Sin acceso a `raw` |
+| `etl_writer` | Conectores batch y DAGs de Airflow | `USAGE` y `CREATE` en `raw`, `stg`, `quarantine`, `core`, `marts` y `meta`; en `tms`, solo `USAGE` y `SELECT` sobre las tablas que crea `tms_writer` (privilegios por defecto) |
+| `bi_reader` | Conexión de Superset | `USAGE` en `core`, `marts` y `meta`, y `SELECT` sobre las tablas que crea `etl_writer` en esos esquemas |
+| `dq_runner` | Reglas de calidad | `USAGE` en `raw`, `stg`, `quarantine`, `core`, `marts` y `meta`; `SELECT` sobre las tablas de `core`, `marts` y `meta` existentes al inicializar y sobre las que crea `etl_writer`; `INSERT` sobre las tablas de `meta` existentes al inicializar |
+| `airflow` | Metadatos de Airflow | Dueño de la base `airflow` |
+| `superset` | Metadatos de Superset | Dueño de la base `superset` |
+
+Otras medidas:
+
+- Las contraseñas de los seis roles se leen de variables de entorno (`<ROL>_PASSWORD`, en `.env`) al crear el volumen de PostgreSQL; si falta alguna, la inicialización falla. `infra/postgres/init` y `src` no contienen contraseñas; `docker-compose.yml` y `.env.example` traen valores de desarrollo (`<rol>_dev`) que se sustituyen en `.env`. La rotación está en [`07_runbook.md`](07_runbook.md) §7.
 - Superset con RLS por región y por carrier.
 - Sin puertos públicos: túnel saliente y autenticación por correo.
 - Secretos por entorno, nunca en el repositorio.

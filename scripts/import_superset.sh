@@ -26,10 +26,16 @@
 # bundle lleva la contraseña de la conexión.
 #
 # Variables opcionales: SUPERSET_CONTAINER, SUPERSET_ADMIN_USER,
-# BI_READER_PASSWORD y PYTHON.
+# BI_READER_PASSWORD (si falta, se lee de .env) y PYTHON.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+# Sin BI_READER_PASSWORD en el entorno, se toma de .env (sin ejecutarlo); si
+# tampoco está ahí, se usa el valor por defecto de desarrollo.
+if [[ -z "${BI_READER_PASSWORD:-}" && -f .env ]]; then
+    BI_READER_PASSWORD="$(sed -n 's/^BI_READER_PASSWORD=//p' .env | tail -n 1)"
+fi
 
 SRC_DIR="dashboards/superset"
 FOLDERS=(databases datasets charts dashboards)

@@ -23,7 +23,7 @@ services:
     environment:
       SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-change-me}
-      SUPERSET_DB_URI: postgresql+psycopg2://superset:superset_dev@postgres:5432/superset
+      SUPERSET_DB_URI: postgresql+psycopg2://superset:${SUPERSET_PASSWORD:-superset_dev}@postgres:5432/superset
       REDIS_HOST: redis
       ADMIN_USER: ${SUPERSET_ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
@@ -59,7 +59,7 @@ services:
     environment:
       SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-change-me}
-      SUPERSET_DB_URI: postgresql+psycopg2://superset:superset_dev@postgres:5432/superset
+      SUPERSET_DB_URI: postgresql+psycopg2://superset:${SUPERSET_PASSWORD:-superset_dev}@postgres:5432/superset
       REDIS_HOST: redis
     command: ["celery", "--app=superset.tasks.celery_app:app", "worker", "--pool=prefork", "--concurrency=2", "-O", "fair"]
     depends_on:
@@ -80,7 +80,7 @@ services:
     environment:
       SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-change-me}
-      SUPERSET_DB_URI: postgresql+psycopg2://superset:superset_dev@postgres:5432/superset
+      SUPERSET_DB_URI: postgresql+psycopg2://superset:${SUPERSET_PASSWORD:-superset_dev}@postgres:5432/superset
       REDIS_HOST: redis
     command: ["celery", "--app=superset.tasks.celery_app:app", "beat", "--pidfile", "/tmp/celerybeat.pid", "--schedule", "/tmp/celerybeat-schedule"]
     depends_on:

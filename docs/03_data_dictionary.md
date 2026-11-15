@@ -1,6 +1,11 @@
 # Diccionario de datos
 
-Describe los archivos de origen que produce el generador sintético y las tablas del esquema `raw` donde aterrizan. Los tipos y la nulabilidad de `raw` son los del DDL explícito del loader: no se infieren de los CSV.
+Describe los archivos que produce el generador sintético, el esquema `tms` que simula el sistema de gestión de transporte, las tablas del esquema `raw` donde aterrizan los datos y las tablas de control de la ingesta en `meta`. A `raw` se llega por dos vías:
+
+- **TMS:** los CSV de envíos y de dimensiones TMS se publican en `tms.<tabla>`, y el conector batch los extrae de ahí a `raw.<tabla>` por watermark de `updated_at`.
+- **ERP:** `customers.csv` llega como archivo a `raw.customers` y se identifica por el SHA-256 de su contenido.
+
+Los tipos y la nulabilidad de `tms` y `raw` son los del DDL explícito de los contratos: no se infieren de los CSV.
 
 ## 1. Archivos de origen
 
@@ -10,14 +15,16 @@ El generador escribe un CSV por entidad y un manifiesto de defectos en `data/<pe
 make data SCALE=demo        # o SCALE=local
 ```
 
-| Archivo | Entidad | Grano | Filas | `source_system` |
-|---|---|---|---|---|
-| `shipments.csv` | Envíos | Una fila por envío (`shipment_id`), más los duplicados inyectados | 50 000 envíos base en `demo`, 200 000 en `local` | `tms` |
-| `customers.csv` | Clientes | Una fila por cliente (`customer_id`) | 150 | `erp` |
-| `carriers.csv` | Transportadores | Una fila por carrier (`carrier_id`) | 40 (10 propios, 30 terceros) | `tms` |
-| `routes.csv` | Rutas | Una fila por par ordenado origen–destino (`route_id`) | 306 (18 ciudades) | `tms` |
-| `service_types.csv` | Tipos de servicio | Una fila por tipo de servicio (`service_type_id`) | 6 | `tms` |
-| `defect_manifest.json` | Defectos inyectados | Una entrada por tipo de defecto y columna | 5 entradas | — |
+Los CSV de envíos y de dimensiones TMS no se cargan como archivos en `raw`: se publican en el esquema `tms` (§1.1). Solo `customers.csv`, del ERP, llega como archivo a `raw`.
+
+| Archivo | Entidad | Grano | Filas | Destino | `source_system` |
+|---|---|---|---|---|---|
+| `shipments.csv` | Envíos | Una fila por envío (`shipment_id`), más los duplicados inyectados | 50 000 envíos base en `demo`, 200 000 en `local` | `tms.shipments` | `tms` |
+| `customers.csv` | Clientes | Una fila por cliente (`customer_id`) | 150 | `raw.customers` | `erp` |
+| `carriers.csv` | Transportadores | Una fila por carrier (`carrier_id`) | 40 (10 propios, 30 terceros) | `tms.carriers` | `tms` |
+| `routes.csv` | Rutas | Una fila por par ordenado origen–destino (`route_id`) | 306 (18 ciudades) | `tms.routes` | `tms` |
+| `service_types.csv` | Tipos de servicio | Una fila por tipo de servicio (`service_type_id`) | 6 | `tms.service_types` | `tms` |
+| `defect_manifest.json` | Defectos inyectados | Una entrada por tipo de defecto y columna | 5 entradas | — | — |
 
 Convenciones comunes de los CSV:
 
@@ -28,35 +35,90 @@ Convenciones comunes de los CSV:
 - La historia cubre 24 meses completos que terminan en la fecha de corte fija `2026-11-09`. Con el mismo perfil y la misma semilla, los archivos son idénticos byte a byte.
 - Los ids de las dimensiones dependen solo de la posición en el catálogo. Todo id no nulo de `shipments.csv` existe en el catálogo de la misma corrida: no se generan huérfanos.
 
-## 2. Tablas `raw`
+### 1.1 Esquema `tms`
 
-Cada archivo aterriza en su tabla, append-only. El loader carga primero las dimensiones y después los envíos.
+`tms` simula la base operativa del TMS. El publicador inserta en ella los cuatro CSV TMS de una carpeta, conectado como `tms_writer` (`NEXORA_TMS_DSN` y `TMS_WRITER_PASSWORD`, del entorno o de `.env`):
 
-| Tabla | Archivo | `source_system` | Columnas |
+```bash
+python -m nexora.generators.tms_publisher --input data/demo                      # todos los envíos
+python -m nexora.generators.tms_publisher --input data/demo --until 2026-11-03   # hasta una fecha de corte
+bash scripts/seed_db.sh demo                                                     # genera data/demo y publica todo
+```
+
+`scripts/seed_db.sh` genera el perfil y publica sin fecha de corte; no carga `raw`.
+
+| Tabla | Origen | Columnas | Unicidad |
 |---|---|---|---|
-| `raw.shipments` | `shipments.csv` | `tms` | 15 de negocio + 5 de metadatos = 20 |
-| `raw.customers` | `customers.csv` | `erp` | 7 + 5 = 12 |
-| `raw.carriers` | `carriers.csv` | `tms` | 5 + 5 = 10 |
-| `raw.routes` | `routes.csv` | `tms` | 6 + 5 = 11 |
-| `raw.service_types` | `service_types.csv` | `tms` | 3 + 5 = 8 |
-
-### 2.1 Metadatos de ejecución
-
-El loader añade estas columnas a toda fila de las cinco tablas, en este orden y detrás de las columnas de negocio.
+| `tms.carriers` | `carriers.csv` | `tms_row_id` + 5 de negocio + `updated_at` | `unique (carrier_id)` |
+| `tms.routes` | `routes.csv` | `tms_row_id` + 6 de negocio + `updated_at` | `unique (route_id)` |
+| `tms.service_types` | `service_types.csv` | `tms_row_id` + 3 de negocio + `updated_at` | `unique (service_type_id)` |
+| `tms.shipments` | `shipments.csv` | `tms_row_id` + 15 de negocio + `updated_at` | Ninguna sobre `shipment_id`: conserva todas las copias, como la fuente |
 
 | Columna | Tipo | Nulabilidad | Descripción |
 |---|---|---|---|
-| `run_id` | `text` | `NOT NULL` | Identificador de la carga. Por defecto, un UUID nuevo por ejecución; todas las tablas de una misma carga comparten el valor |
-| `source_system` | `text` | `NOT NULL` | Sistema de origen declarado por tabla: `erp` en `customers`, `tms` en el resto |
-| `source_file` | `text` | `NOT NULL` | Nombre del archivo cargado (`shipments.csv`), nunca una ruta |
-| `source_file_hash` | `text` | `NOT NULL` | SHA-256 del archivo en hexadecimal (64 caracteres) |
-| `ingested_at` | `timestamptz` | `NOT NULL` | Instante de la carga; el mismo para todas las tablas de una ejecución |
+| `tms_row_id` | `bigint` | `NOT NULL`, clave primaria | Identidad generada por la base (`generated always as identity`); da el orden de inserción |
+| Columnas de negocio | como en §2.3 a §2.7 | como en §2.3 a §2.7 | Mismos nombres, tipos, nulabilidad y `check` que la tabla `raw` del mismo nombre |
+| `updated_at` | `timestamptz` | `NOT NULL` | Instante de inserción, del reloj de la base (`clock_timestamp()`). Es la columna del watermark de extracción |
 
-`run_id` e `ingested_at` cambian entre ejecuciones; no forman parte de los archivos de origen ni del manifiesto.
+Reglas de la publicación:
+
+1. Solo inserta: nunca actualiza ni borra filas de `tms`.
+2. Publica en este orden: `carriers`, `routes`, `service_types` y `shipments`, cada tabla en su propia transacción. Cada transacción toma primero el bloqueo consultivo `pg_advisory_xact_lock(hashtext('tms.<tabla>'))`, el mismo que toma el conector de extracción, así que ninguna fila se confirma con un `updated_at` anterior a un watermark ya leído.
+3. Las dimensiones se insertan por id natural: un id que ya existe no se vuelve a insertar.
+4. Los envíos se publican por grupos de `shipment_id`: todas las copias de un `shipment_id` entran juntas, en la misma transacción, y un `shipment_id` que ya existe en `tms.shipments` no se vuelve a publicar. Por eso las copias de un envío siempre caen en la misma extracción hacia `raw`.
+5. Con `--until`, solo se publican los grupos cuya fecha de disponibilidad es igual o anterior a la fecha de corte; sin `--until`, todos.
+
+Fecha de disponibilidad de un envío: con `x` el entero de los primeros 8 dígitos hexadecimales del SHA-256 de `shipment_id`, el envío es tardío si `x % 100 < 2` (cerca del 2 % de los envíos) y entonces está disponible `2 + (x // 100) % 6` días después de su `pickup_date`, es decir, de 2 a 7 días; si no, está disponible el mismo día de su `pickup_date`. La fecha de un grupo es la mayor de sus copias. Un envío tardío llega a `tms`, y después a `raw`, con una `pickup_date` anterior a la fecha de corte de la publicación que lo incluye.
+
+Permisos: `tms_writer` crea las tablas de `tms` y es el único que escribe en ellas; `etl_writer` solo tiene `SELECT` sobre ellas.
+
+## 2. Tablas `raw`
+
+Las tablas `raw` son append-only: los conectores batch solo insertan, nunca borran ni reescriben filas. Las carga el conector `python -m nexora.ingestion.batch.loaders`, conectado como `etl_writer` (`NEXORA_PG_DSN` y `ETL_WRITER_PASSWORD`, del entorno o de `.env`), por una de dos vías:
+
+- `--source tms`: extrae `tms.carriers`, `tms.routes`, `tms.service_types` y `tms.shipments`, en ese orden, hacia la tabla `raw` del mismo nombre, con las filas cuyo `updated_at` es posterior al watermark de la tabla (§2.2).
+- `--source files --input <carpeta>`: carga en `raw.customers` los archivos `customers*.csv` de la carpeta, en orden de nombre, omitiendo los que ya están registrados por su hash (§2.2).
+
+En Airflow, `dag_ingest_batch` ejecuta las dos vías con el calendario `0 2 * * *`, en las tareas `extract_tms` y `load_erp_files`; la carpeta de archivos es `NEXORA_DATA_DIR/NEXORA_SCALE`.
+
+| Tabla | Origen | Vía | `source_system` | Columnas |
+|---|---|---|---|---|
+| `raw.shipments` | `tms.shipments` | Extracción por watermark | `tms` | 15 de negocio + 5 de metadatos = 20 |
+| `raw.customers` | `customers.csv` | Archivo por hash | `erp` | 7 + 5 = 12 |
+| `raw.carriers` | `tms.carriers` | Extracción por watermark | `tms` | 5 + 5 = 10 |
+| `raw.routes` | `tms.routes` | Extracción por watermark | `tms` | 6 + 5 = 11 |
+| `raw.service_types` | `tms.service_types` | Extracción por watermark | `tms` | 3 + 5 = 8 |
+
+### 2.1 Metadatos de ejecución
+
+Los conectores añaden estas columnas a toda fila de las cinco tablas, en este orden y detrás de las columnas de negocio.
+
+| Columna | Tipo | Nulabilidad | Extracción de `tms` | Archivo ERP |
+|---|---|---|---|---|
+| `run_id` | `text` | `NOT NULL` | Identificador de la ejecución del conector: por defecto, un UUID nuevo por ejecución (`--run-id` lo fija). Todas las tablas de una misma ejecución comparten el valor | Igual |
+| `source_system` | `text` | `NOT NULL` | `tms` | `erp` |
+| `source_file` | `text` | `NOT NULL` | Tabla de origen, `<esquema>.<tabla>` (`tms.shipments`) | Nombre del archivo cargado (`customers.csv`), nunca una ruta |
+| `source_file_hash` | `text` | `NOT NULL` | SHA-256 en hexadecimal (64 caracteres) del lote extraído: las filas de negocio de la ventana como `row(...)::text`, unidas por salto de línea en orden de `tms_row_id` y calculado en UTC | SHA-256 en hexadecimal (64 caracteres) del contenido del archivo |
+| `ingested_at` | `timestamptz` | `NOT NULL` | Instante de la ejecución; el mismo para todas las tablas de una ejecución | Igual |
+
+`run_id` e `ingested_at` cambian entre ejecuciones; no forman parte de los archivos de origen, de `tms` ni del manifiesto. En `dag_ingest_batch`, `extract_tms` y `load_erp_files` son ejecuciones distintas y cada una tiene su `run_id`.
 
 ### 2.2 Idempotencia
 
-La carga es idempotente por archivo. Antes de insertar, el loader calcula el SHA-256 del CSV; si ese hash ya está en `source_file_hash` de la tabla destino, omite el archivo y no inserta filas. Cada archivo se carga en una sola transacción, con la tabla bloqueada para que dos cargas simultáneas del mismo archivo no lo inserten dos veces. La cabecera del CSV debe coincidir exactamente con el orden de columnas del contrato; si no, la carga falla.
+**Extracción de `tms`, por watermark.** Cada tabla se extrae en una sola transacción, en este orden:
+
+1. Fija la zona horaria de la transacción en UTC, para que el hash del lote no dependa de la sesión.
+2. Toma el bloqueo consultivo `pg_advisory_xact_lock(hashtext('tms.<tabla>'))`, el mismo del publicador. Dos extracciones simultáneas de la misma tabla se ordenan, y la segunda ve el watermark que fijó la primera.
+3. Solo entonces lee el watermark de `tms.<tabla>` en `meta.batch_watermarks` (§2.8) y el `max(updated_at)` de la tabla.
+4. La ventana es `(watermark, max(updated_at)]`: excluye el watermark e incluye la cota superior. En la primera extracción, sin watermark, la ventana toma todas las filas hasta `max(updated_at)`.
+5. Inserta en `raw.<tabla>` las filas de la ventana en orden de `tms_row_id`, con los metadatos de §2.1, comprueba que el número de filas insertadas coincide con el del lote y deja el watermark en `max(updated_at)`.
+
+Si la tabla está vacía o `max(updated_at)` es igual al watermark, no inserta filas ni toca el watermark: repetir la extracción inserta 0 filas. Si `max(updated_at)` es anterior al watermark, la extracción falla. Como la ventana se define por `updated_at` y no por la fecha de negocio, los envíos tardíos entran en la extracción siguiente a su publicación aunque su `pickup_date` sea anterior. Cada fila de `tms` se extrae una sola vez y las copias de un `shipment_id` se publican juntas (§1.1), así que ningún `shipment_id` queda repartido en dos `run_id`.
+
+**Archivos ERP, por hash.** Cada archivo se carga en una sola transacción. La cabecera del CSV debe coincidir exactamente con el orden de columnas del contrato; si no, la carga falla. El conector calcula el SHA-256 del contenido, toma un bloqueo consultivo del registro de archivos de la tabla y busca el par `(tabla, hash)` en `meta.ingested_files` (§2.8):
+
+- Si está registrado, omite el archivo y no inserta filas. Una copia renombrada de un archivo ya cargado tiene el mismo hash y también se omite.
+- Si no, copia el archivo a una tabla temporal tipada con el contrato, lo inserta en `raw.customers` con los metadatos de §2.1 y lo registra en `meta.ingested_files`, en la misma transacción. Un archivo modificado tiene un hash nuevo y se carga.
 
 ### 2.3 `raw.shipments`
 
@@ -142,6 +204,35 @@ Catálogo:
 | `SVC-FTL` | `full_truckload` | 96 |
 | `SVC-LTL` | `less_than_truckload` | 72 |
 
+### 2.8 Control de la ingesta en `meta`
+
+Los conectores crean estas tablas en su primera ejecución, como `etl_writer`, y las escriben en la misma transacción que la carga en `raw`: si la carga de una tabla o de un archivo falla, no deja filas en `raw` ni cambios en `meta`.
+
+`meta.batch_watermarks`: una fila por tabla de `tms` extraída al menos una vez.
+
+| Columna | Tipo | Nulabilidad | Descripción |
+|---|---|---|---|
+| `source_table` | `text` | `NOT NULL`, clave primaria | Tabla de origen, `<esquema>.<tabla>` (`tms.shipments`) |
+| `watermark_ts` | `timestamptz` | `NOT NULL` | Mayor `updated_at` ya copiado a `raw`; cota inferior, excluida, de la extracción siguiente |
+| `run_id` | `text` | `NOT NULL` | Ejecución que fijó el watermark |
+| `set_at` | `timestamptz` | `NOT NULL` | `ingested_at` de esa ejecución |
+
+`meta.ingested_files`: una fila por archivo ERP cargado, identificado por su contenido.
+
+| Columna | Tipo | Nulabilidad | Descripción |
+|---|---|---|---|
+| `target_table` | `text` | `NOT NULL`, clave primaria con `source_file_hash` | Tabla `raw` de destino, sin esquema (`customers`) |
+| `source_file_hash` | `text` | `NOT NULL`, clave primaria con `target_table` | SHA-256 del contenido del archivo |
+| `source_file` | `text` | `NOT NULL` | Nombre del archivo con el que se cargó por primera vez |
+| `run_id` | `text` | `NOT NULL` | Ejecución que lo cargó |
+| `row_count` | `integer` | `NOT NULL` | Filas insertadas en `raw` |
+| `ingested_at` | `timestamptz` | `NOT NULL` | Instante de la carga |
+
+```sql
+select * from meta.batch_watermarks order by source_table;
+select target_table, source_file, row_count, ingested_at from meta.ingested_files order by ingested_at;
+```
+
 ## 3. Manifiesto de defectos
 
 `data/<perfil>/defect_manifest.json` declara los defectos inyectados en `shipments.csv`. Es determinista: no guarda fecha de generación, ruta de salida, versión ni `run_id`, y `defects` sigue un orden fijo.
@@ -181,17 +272,17 @@ El 1 % de nulos se reparte en tercios que difieren como mucho en una fila. Con `
 | `critical_null` | `carrier_id` | 166 | 0.00332 |
 | `delivered_before_pickup` | `delivered_at` | 400 | 0.008 |
 
-## 4. Linaje `raw` → `stg` → `core`
+## 4. Linaje `tms` → `raw` → `stg` → `core`
 
-La transformación la hace dbt. Las relaciones de `stg` son vistas; las de `quarantine` y `core` son tablas que se reconstruyen en cada `dbt build`.
+Envíos y dimensiones TMS llegan a `raw` por extracción de `tms.<tabla>` por watermark, y los clientes por carga de `customers.csv` por hash (§2.2). Desde `raw`, la transformación la hace dbt. Las relaciones de `stg` son vistas; las de `quarantine` y `core` son tablas que se reconstruyen en cada `dbt build`.
 
 ```text
-raw.shipments ─► stg_tms__shipments ─► stg_tms__shipments_validated ─┬─► stg_tms__shipments_valid ─► core.fact_shipments
-                                                                     └─► quarantine.shipments
-raw.customers     ─► stg_erp__customers     ─► core.dim_customer      ─┐
-raw.carriers      ─► stg_tms__carriers      ─► core.dim_carrier       ─┤
-raw.routes        ─► stg_tms__routes        ─► core.dim_route         ─┼─► core.fact_shipments
-raw.service_types ─► stg_tms__service_types ─► core.dim_service_type  ─┘
+tms.shipments ─► raw.shipments ─► stg_tms__shipments ─► stg_tms__shipments_validated ─┬─► stg_tms__shipments_valid ─► core.fact_shipments
+                                                                                      └─► quarantine.shipments
+customers.csv     ─► raw.customers     ─► stg_erp__customers     ─► core.dim_customer      ─┐
+tms.carriers      ─► raw.carriers      ─► stg_tms__carriers      ─► core.dim_carrier       ─┤
+tms.routes        ─► raw.routes        ─► stg_tms__routes        ─► core.dim_route         ─┼─► core.fact_shipments
+tms.service_types ─► raw.service_types ─► stg_tms__service_types ─► core.dim_service_type  ─┘
 stg_tms__shipments_valid ─► core.dim_date
 ```
 
@@ -440,7 +531,7 @@ where table_schema = 'marts' and table_name = 'mart_operations';
 ### 10.4 Linaje hasta el dashboard
 
 ```text
-raw.shipments ─► stg.stg_tms__shipments ─► stg.stg_tms__shipments_validated ─► stg.stg_tms__shipments_valid
+tms.shipments ─► raw.shipments ─► stg.stg_tms__shipments ─► stg.stg_tms__shipments_validated ─► stg.stg_tms__shipments_valid
   ─► core.fact_shipments ─► marts.mart_operations
   ─► dataset mart_operations (métrica «OTIF %») ─► chart «OTIF mensual» ─► dashboard «Operación»
 ```
