@@ -1,0 +1,47 @@
+version: 2
+
+models:
+  - name: shipments
+    description: >
+      Envíos rechazados de raw.shipments. Una fila por fila rechazada; la regla
+      principal sigue la prioridad DQ-001 antes que DQ-002 y todas las reglas
+      incumplidas quedan en reason y en payload.dq_errors. Junto con
+      stg_tms__shipments_valid forma una partición exacta de raw.shipments.
+    columns:
+      - name: quarantine_id
+        description: "md5 de run_id, shipment_id, source_file_hash y copy_rank; identifica la fila rechazada."
+        data_tests:
+          - unique
+          - not_null
+      - name: source_table
+        description: "Tabla de origen de la fila rechazada (raw.shipments)."
+        data_tests:
+          - not_null
+      - name: rule_id
+        description: "Regla principal incumplida según la prioridad declarada."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["DQ-001", "DQ-002"]
+      - name: reason
+        description: "Regla principal y lista de todas las reglas incumplidas."
+        data_tests:
+          - not_null
+      - name: payload
+        description: "Fila original en jsonb, con dq_errors y dq_primary_rule."
+        data_tests:
+          - not_null
+      - name: detected_at
+        description: "Momento en que la construcción del modelo detectó el rechazo."
+      - name: run_id
+        description: "Carga de raw a la que pertenece la fila rechazada."
+        data_tests:
+          - not_null
+      - name: severity
+        description: "Severidad del rechazo: high, medium o low."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["high", "medium", "low"]

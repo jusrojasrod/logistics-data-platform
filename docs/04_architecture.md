@@ -40,7 +40,7 @@ Orquestación: Apache Airflow 3. Transformación: dbt. Todo corre en contenedore
 
 | Capa | Esquema | Propósito | Contrato |
 |---|---|---|---|
-| Raw | `raw` | Aterrizar tal como llega | Append-only. Cada fila lleva `ingestion_ts`, `source_system`, `run_id` |
+| Raw | `raw` | Aterrizar tal como llega | Append-only. Cada fila lleva `ingested_at`, `source_system`, `run_id` |
 | Staging | `stg` | Limpiar y validar | `_validated` calcula errores; `_valid` filtra; nada se borra |
 | Cuarentena | `quarantine` | Conservar rechazos | `rule_id`, `reason`, `payload`, `run_id`, `detected_at` |
 | Core | `core` | Modelo dimensional | Grano declarado, claves sustitutas, SCD2 donde aplica |

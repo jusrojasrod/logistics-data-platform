@@ -1,0 +1,59 @@
+version: 2
+
+# Tests genéricos nativos de dbt sobre las claves de staging. Las reglas de
+# alerta DQ-003 y DQ-011 viven como tests singulares en dbt/tests/ con
+# severity warn: avisan sin rechazar filas.
+
+models:
+  - name: stg_tms__shipments_validated
+    description: >
+      Envíos de stg_tms__shipments clasificados por reglas de calidad. Una fila
+      por fila de raw.shipments con dq_errors (ordenado por prioridad),
+      dq_primary_rule e is_valid.
+
+  - name: stg_tms__shipments_valid
+    description: >
+      Envíos válidos (is_valid). Una fila por shipment_id; junto con
+      quarantine.shipments forma una partición exacta de raw.shipments.
+    columns:
+      - name: shipment_id
+        description: "Identificador natural del envío."
+        data_tests:
+          - unique
+          - not_null
+
+  - name: stg_erp__customers
+    description: "Clientes tipados; una fila por customer_id (carga más reciente)."
+    columns:
+      - name: customer_id
+        description: "Identificador natural del cliente."
+        data_tests:
+          - unique
+          - not_null
+
+  - name: stg_tms__carriers
+    description: "Transportistas tipados; una fila por carrier_id (carga más reciente)."
+    columns:
+      - name: carrier_id
+        description: "Identificador natural del transportista."
+        data_tests:
+          - unique
+          - not_null
+
+  - name: stg_tms__routes
+    description: "Rutas tipadas; una fila por route_id (carga más reciente)."
+    columns:
+      - name: route_id
+        description: "Identificador natural de la ruta."
+        data_tests:
+          - unique
+          - not_null
+
+  - name: stg_tms__service_types
+    description: "Tipos de servicio tipados; una fila por service_type_id (carga más reciente)."
+    columns:
+      - name: service_type_id
+        description: "Identificador natural del tipo de servicio."
+        data_tests:
+          - unique
+          - not_null

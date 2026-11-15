@@ -180,3 +180,198 @@ El 1 % de nulos se reparte en tercios que difieren como mucho en una fila. Con `
 | `critical_null` | `customer_id` | 167 | 0.00334 |
 | `critical_null` | `carrier_id` | 166 | 0.00332 |
 | `delivered_before_pickup` | `delivered_at` | 400 | 0.008 |
+
+## 4. Linaje `raw` → `stg` → `core`
+
+La transformación la hace dbt. Las relaciones de `stg` son vistas; las de `quarantine` y `core` son tablas que se reconstruyen en cada `dbt build`.
+
+```text
+raw.shipments ─► stg_tms__shipments ─► stg_tms__shipments_validated ─┬─► stg_tms__shipments_valid ─► core.fact_shipments
+                                                                     └─► quarantine.shipments
+raw.customers     ─► stg_erp__customers     ─► core.dim_customer      ─┐
+raw.carriers      ─► stg_tms__carriers      ─► core.dim_carrier       ─┤
+raw.routes        ─► stg_tms__routes        ─► core.dim_route         ─┼─► core.fact_shipments
+raw.service_types ─► stg_tms__service_types ─► core.dim_service_type  ─┘
+stg_tms__shipments_valid ─► core.dim_date
+```
+
+| Relación | Esquema | Materialización | Origen | Grano |
+|---|---|---|---|---|
+| `stg_tms__shipments` | `stg` | vista | `raw.shipments` | Una fila por fila de `raw.shipments` |
+| `stg_tms__shipments_validated` | `stg` | vista | `stg_tms__shipments` | Una fila por fila de `raw.shipments`, clasificada |
+| `stg_tms__shipments_valid` | `stg` | vista | `stg_tms__shipments_validated` | Una fila por `shipment_id` válido |
+| `stg_erp__customers` | `stg` | vista | `raw.customers` | Una fila por `customer_id` |
+| `stg_tms__carriers` | `stg` | vista | `raw.carriers` | Una fila por `carrier_id` |
+| `stg_tms__routes` | `stg` | vista | `raw.routes` | Una fila por `route_id` |
+| `stg_tms__service_types` | `stg` | vista | `raw.service_types` | Una fila por `service_type_id` |
+| `quarantine.shipments` | `quarantine` | tabla | `stg_tms__shipments_validated` | Una fila por fila rechazada |
+| `dim_date` | `core` | tabla | `stg_tms__shipments_valid` | Un día del calendario |
+| `dim_customer` | `core` | tabla | `stg_erp__customers` | Un cliente, una sola versión |
+| `dim_carrier` | `core` | tabla | `stg_tms__carriers` | Un transportador, una sola versión |
+| `dim_route` | `core` | tabla | `stg_tms__routes` | Una ruta, una sola versión |
+| `dim_service_type` | `core` | tabla | `stg_tms__service_types` | Un tipo de servicio, una sola versión |
+| `fact_shipments` | `core` | tabla | `stg_tms__shipments_valid` y las cuatro dimensiones | Un envío válido (`shipment_id`) |
+
+Partición exacta: para cada `run_id`, cada fila de `raw.shipments` termina en `stg_tms__shipments_valid` o en `quarantine.shipments`, nunca en las dos ni en ninguna. Un envío duplicado conserva exactamente una copia válida y el resto va a cuarentena con DQ-001; un envío rechazado por cualquier otra regla no tiene copia válida. Lo comprueba `dbt/tests/assert_shipments_partition.sql`, que lee el `shipment_id` de la cuarentena en `payload->>'shipment_id'`.
+
+Nulabilidad en `stg`, `quarantine` y `core`: las vistas y las tablas creadas por dbt no declaran `NOT NULL` en la base; `information_schema` las muestra todas como nulables. Las garantías de las tablas siguientes salen de la lógica del modelo y de los tests de dbt, y la columna "Garantía" indica cuál aplica.
+
+## 5. Staging de envíos
+
+### 5.1 `stg.stg_tms__shipments`
+
+Tipa `raw.shipments` sin borrar filas: tiene las mismas filas que la tabla de origen. Conserva las 15 columnas de negocio y las 5 de metadatos de §2.3 con el mismo nombre y los mismos tipos (`text`, `timestamptz`, `date`, `integer`, `numeric(12,3)` y `boolean`), y añade una columna.
+
+| Columna | Tipo | Garantía | Descripción |
+|---|---|---|---|
+| 15 columnas de negocio y 5 de metadatos | como en §2.3 | como en §2.3 | Mismos valores que en `raw.shipments`, con el tipo explícito |
+| `copy_rank` | `bigint` | ≥ 1 | Posición de la fila entre las copias del mismo envío: `row_number()` sobre `(run_id, shipment_id, source_file_hash)` ordenado por `ingested_at`. `1` es la primera copia; un valor mayor indica un duplicado |
+
+### 5.2 `stg.stg_tms__shipments_validated`
+
+Las 21 columnas de `stg_tms__shipments` más la clasificación de calidad. Cada fila de `raw.shipments` aparece una sola vez.
+
+| Columna | Tipo | Garantía | Descripción |
+|---|---|---|---|
+| 21 columnas de `stg_tms__shipments` | como en §5.1 | como en §5.1 | Sin cambios |
+| `dq_errors` | `text[]` | nunca nulo; vacío si la fila es válida | Reglas incumplidas, en orden de prioridad: `DQ-001` antes que `DQ-002` |
+| `dq_primary_rule` | `text` | igual a `dq_errors[1]`; nulo si la fila es válida | Regla principal de la fila |
+| `is_valid` | `boolean` | nunca nulo | `true` si `dq_errors` está vacío |
+
+Reglas que rechazan filas (catálogo en [`06_quality_rules.md`](06_quality_rules.md)):
+
+| Regla | Condición de rechazo | Prioridad |
+|---|---|---|
+| DQ-001 | `shipment_id` nulo o `copy_rank > 1` | 1 |
+| DQ-002 | `delivered_at < picked_up_at`; si falta alguna de las dos fechas no se incumple | 2 |
+
+Las fechas imposibles que inyecta el generador (`delivered_before_pickup`) caen en DQ-002, sin regla nueva. Una fila que incumple las dos reglas tiene `dq_errors = {DQ-001,DQ-002}` y `dq_primary_rule = 'DQ-001'`.
+
+### 5.3 `stg.stg_tms__shipments_valid`
+
+Filas de `stg_tms__shipments_validated` con `is_valid`. Tiene las 21 columnas de §5.1 —sin `dq_errors`, `dq_primary_rule` ni `is_valid`— y una fila por `shipment_id` (tests `unique` y `not_null`). Los nulos de `promised_delivery_ts`, `customer_id` y `carrier_id` no rechazan la fila: son alertas (§8).
+
+## 6. Cuarentena
+
+### 6.1 `quarantine.shipments`
+
+Una fila por **fila rechazada** de `raw.shipments`, no por regla incumplida. Junto con `stg_tms__shipments_valid` forma la partición exacta de §4. No expone `shipment_id` como columna: se lee de `payload->>'shipment_id'`.
+
+| Columna | Tipo | Garantía | Descripción |
+|---|---|---|---|
+| `quarantine_id` | `text` | `unique`, `not_null` | `md5` de `run_id`, `shipment_id`, `source_file_hash` y `copy_rank` unidos con `\|` |
+| `source_table` | `text` | `not_null` | Tabla de origen: `raw.shipments` |
+| `rule_id` | `text` | `not_null`; `DQ-001` o `DQ-002` | Regla principal según la prioridad de §5.2 |
+| `reason` | `text` | `not_null` | Texto con la regla principal y todas las reglas incumplidas, por ejemplo `Regla principal: DQ-001. Reglas incumplidas: DQ-001, DQ-002.` |
+| `payload` | `jsonb` | `not_null` | Fila original: las 20 columnas de `raw.shipments`, `copy_rank`, `dq_errors` (en el mismo orden) y `dq_primary_rule` |
+| `detected_at` | `timestamptz` | — | Instante en que la construcción del modelo detectó el rechazo; cambia en cada `dbt build` |
+| `run_id` | `text` | `not_null` | Carga de `raw` a la que pertenece la fila |
+| `severity` | `text` | `not_null`; `high`, `medium` o `low` | Severidad del rechazo; hoy siempre `high` |
+
+## 7. Staging de dimensiones
+
+Cada modelo tipa su tabla `raw` y deja una fila por id natural: si el id llega en varias cargas, conserva la más reciente por `ingested_at` (y, a igualdad, por `source_file_hash`). El id natural tiene tests `unique` y `not_null`. Además de los atributos, conservan `run_id`, `source_system`, `source_file_hash` e `ingested_at` (`text` y `timestamptz`, como en §2.1); no conservan `source_file`.
+
+| Modelo | Columnas de negocio y tipo |
+|---|---|
+| `stg.stg_erp__customers` | `customer_id` `text`, `customer_name` `text`, `segment` `text`, `industry` `text`, `region` `text`, `city` `text`, `payment_term_days` `integer` |
+| `stg.stg_tms__carriers` | `carrier_id` `text`, `carrier_name` `text`, `carrier_type` `text`, `service_level` `text`, `rate_index` `numeric` |
+| `stg.stg_tms__routes` | `route_id` `text`, `origin_city` `text`, `destination_city` `text`, `distance_km` `numeric`, `estimated_hours` `numeric`, `road_type` `text` |
+| `stg.stg_tms__service_types` | `service_type_id` `text`, `service_type_name` `text`, `sla_hours` `integer` |
+
+`rate_index`, `distance_km` y `estimated_hours` pasan a `numeric` sin precisión fija; los valores son los de `raw`. El significado de cada atributo es el de §2.4 a §2.7.
+
+## 8. Alertas de calidad sobre envíos
+
+Estas reglas no rechazan filas ni entran en la partición: son tests de dbt con `severity: warn`, que avisan sin romper la construcción.
+
+| Regla | Qué comprueba | Columna | Test |
+|---|---|---|---|
+| DQ-003 | Peso entre 0.1 y 40 000 kg; los nulos de envíos sin entrega no cuentan | `delivered_weight_kg` de `stg_tms__shipments_validated` (es la `weight_kg` del catálogo) | `dbt/tests/assert_delivered_weight_range.sql` |
+| DQ-004 | Clave de transportador resuelta en el hecho | `carrier_key` de `fact_shipments` | `dbt/tests/assert_dimension_foreign_keys.sql` |
+| DQ-005 | Clave de cliente resuelta en el hecho | `customer_key` de `fact_shipments` | `dbt/tests/assert_dimension_foreign_keys.sql` |
+| DQ-011 | Proporción de `promised_delivery_ts` no nulo ≥ 0.99 | `promised_delivery_ts` de `stg_tms__shipments_validated` | `dbt/tests/assert_promised_delivery_proportion.sql` |
+
+Los `customer_id` y `carrier_id` nulos que inyecta el generador dejan nula la clave sustituta correspondiente en `fact_shipments`; no se crea un miembro inferido. `assert_dimension_foreign_keys.sql` vigila con el mismo criterio `route_key` y `service_type_key`, y los tests `relationships` del hecho hacia las cuatro dimensiones también avisan con `severity: warn`.
+
+## 9. `core`
+
+### 9.1 Dimensiones
+
+Dimensiones de una sola versión: una fila por id natural, con clave sustituta estable `md5(<id>)` en `text`. No guardan historia (no tienen `valid_from`, `valid_to`, `is_current` ni `is_inferred`). Clave sustituta e id natural tienen tests `unique` y `not_null`; el número de filas coincide con el de su modelo de staging.
+
+| Tabla | Columnas | Origen |
+|---|---|---|
+| `core.dim_customer` | `customer_key` `text` = `md5(customer_id)`, `customer_id`, `customer_name`, `segment`, `industry`, `region`, `city` (`text`), `payment_term_days` (`integer`) | `stg_erp__customers` |
+| `core.dim_carrier` | `carrier_key` `text` = `md5(carrier_id)`, `carrier_id`, `carrier_name`, `carrier_type`, `service_level` (`text`), `rate_index` (`numeric`) | `stg_tms__carriers` |
+| `core.dim_route` | `route_key` `text` = `md5(route_id)`, `route_id`, `origin_city`, `destination_city` (`text`), `distance_km`, `estimated_hours` (`numeric`), `road_type` (`text`) | `stg_tms__routes` |
+| `core.dim_service_type` | `service_type_key` `text` = `md5(service_type_id)`, `service_type_id`, `service_type_name` (`text`), `sla_hours` (`integer`) | `stg_tms__service_types` |
+
+### 9.2 `core.dim_date`
+
+Calendario diario continuo entre la menor y la mayor `pickup_date` de `stg_tms__shipments_valid`. Si no hay envíos válidos, la tabla queda vacía.
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `date_key` | `date` | Día del calendario; una fila por día |
+| `year_number` | `integer` | Año |
+| `quarter_number` | `integer` | Trimestre, de 1 a 4 |
+| `month_number` | `integer` | Mes, de 1 a 12 |
+| `iso_year_number` | `integer` | Año ISO 8601 al que pertenece la semana |
+| `iso_week_number` | `integer` | Semana ISO 8601, de 1 a 53 |
+| `day_of_week_number` | `integer` | Día de la semana ISO 8601: 1 = lunes, 7 = domingo |
+
+### 9.3 `core.fact_shipments`
+
+Grano: una fila por envío válido (`shipment_id`), desde `stg_tms__shipments_valid`. Fecha de negocio `pickup_date`; sin partición. Guarda los ids naturales y las claves sustitutas de las cuatro dimensiones, unidas por `left join` sobre el id natural. No contiene columnas financieras: ni ingresos, ni costos, ni tarifas, ni moneda.
+
+| Columna | Tipo | Garantía | Descripción |
+|---|---|---|---|
+| `shipment_id` | `text` | `unique`, `not_null` | Identificador del envío; clave del grano |
+| `customer_key` | `text` | `relationships` con `dim_customer` (alerta) | Clave sustituta del cliente; nula si `customer_id` es nulo (DQ-005) |
+| `carrier_key` | `text` | `relationships` con `dim_carrier` (alerta) | Clave sustituta del transportador; nula si `carrier_id` es nulo (DQ-004) |
+| `route_key` | `text` | `relationships` con `dim_route` (alerta) | Clave sustituta de la ruta |
+| `service_type_key` | `text` | `relationships` con `dim_service_type` (alerta) | Clave sustituta del tipo de servicio |
+| `customer_id` | `text` | — | Id natural del cliente; nulo solo por defecto inyectado |
+| `carrier_id` | `text` | — | Id natural del transportador; nulo solo por defecto inyectado |
+| `route_id` | `text` | — | Id natural de la ruta |
+| `service_type_id` | `text` | — | Id natural del tipo de servicio |
+| `pickup_date` | `date` | `not_null` | Fecha de negocio: fecha de la recogida planificada |
+| `pickup_ts` | `timestamptz` | — | Recogida planificada |
+| `promised_delivery_ts` | `timestamptz` | — | Entrega prometida; nula solo por defecto inyectado (DQ-011) |
+| `picked_up_at` | `timestamptz` | — | Recogida real |
+| `delivered_at` | `timestamptz` | — | Entrega real; nula si no hubo entrega |
+| `ordered_qty` | `integer` | — | Unidades pedidas |
+| `delivered_qty` | `integer` | — | Unidades entregadas; nulas si no hubo entrega |
+| `ordered_weight_kg` | `numeric(12,3)` | — | Peso pedido, en kg |
+| `delivered_weight_kg` | `numeric(12,3)` | — | Peso entregado, en kg; nulo si no hubo entrega. Es la `weight_kg` de DQ-003 |
+| `closed_flag` | `boolean` | `not_null` | Envío cerrado: `delivered_at is not null or definitive_failure_flag` |
+| `on_time_flag` | `boolean` | nula si falta `delivered_at` o `promised_delivery_ts` | A tiempo: `delivered_at <= promised_delivery_ts`. Una entrega anticipada cuenta como a tiempo |
+| `in_full_flag` | `boolean` | nula si no hubo entrega | Completo: `delivered_qty >= ordered_qty and delivered_weight_kg >= ordered_weight_kg` |
+| `otif_flag` | `boolean` | igual a `on_time_flag and in_full_flag` en todas las filas | A tiempo y completo; con la lógica de tres valores de SQL es `false` si alguna de las dos es `false` y nula si ninguna es `false` y falta alguna |
+
+`definitive_failure_flag` se usa para calcular `closed_flag` y no se proyecta en el hecho.
+
+Tests del hecho, además de los de la tabla:
+
+| Test | Qué comprueba |
+|---|---|
+| `dbt/tests/assert_fact_matches_valid_shipments.sql` | Cada `shipment_id` de `stg_tms__shipments_valid` aparece exactamente una vez en el hecho y el hecho no tiene ids ausentes en los válidos |
+| `dbt/tests/assert_shipment_flags_consistent.sql` | `otif_flag is not distinct from (on_time_flag and in_full_flag)` en todas las filas |
+| `dbt/tests/assert_no_money_in_fact_shipments.sql` | Ninguna columna se llama `currency_code` ni contiene `(billed\|payable\|cost\|revenue\|tariff\|deduction\|surcharge\|tax)_amount` |
+
+### 9.4 Cómo seguir un envío
+
+```sql
+-- Un envío válido: al menos una fila en raw, una en válidos y una en el hecho.
+select count(*) from raw.shipments where shipment_id = '<id>';
+select count(*) from stg.stg_tms__shipments_valid where shipment_id = '<id>';
+select count(*) from core.fact_shipments where shipment_id = '<id>';
+
+-- Un rechazo: la fila está en cuarentena con su regla.
+select rule_id, reason, payload->'dq_errors' as dq_errors
+from quarantine.shipments
+where payload->>'shipment_id' = '<id>';
+```
+
+Un rechazo por DQ-002 no aparece ni en `stg_tms__shipments_valid` ni en `fact_shipments`. Un duplicado por DQ-001 aparece en cuarentena y conserva exactamente una copia en los válidos y en el hecho.

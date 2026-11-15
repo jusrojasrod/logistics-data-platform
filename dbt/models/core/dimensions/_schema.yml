@@ -1,0 +1,64 @@
+version: 2
+
+# Dimensiones de una sola versión: una fila por id natural, con clave sustituta
+# estable md5(<id>). No guardan historia (sin valid_from, valid_to ni
+# is_current). Solo tests genéricos nativos de dbt.
+
+models:
+  - name: dim_customer
+    description: "Clientes; una versión por customer_id con clave sustituta md5(customer_id)."
+    columns:
+      - name: customer_key
+        description: "Clave sustituta: md5(customer_id)."
+        data_tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: "Identificador natural del cliente."
+        data_tests:
+          - unique
+          - not_null
+
+  - name: dim_carrier
+    description: "Transportistas; una versión por carrier_id con clave sustituta md5(carrier_id)."
+    columns:
+      - name: carrier_key
+        description: "Clave sustituta: md5(carrier_id)."
+        data_tests:
+          - unique
+          - not_null
+      - name: carrier_id
+        description: "Identificador natural del transportista."
+        data_tests:
+          - unique
+          - not_null
+
+  - name: dim_route
+    description: "Rutas; una versión por route_id con clave sustituta md5(route_id)."
+    columns:
+      - name: route_key
+        description: "Clave sustituta: md5(route_id)."
+        data_tests:
+          - unique
+          - not_null
+      - name: route_id
+        description: "Identificador natural de la ruta."
+        data_tests:
+          - unique
+          - not_null
+
+  - name: dim_service_type
+    description: >
+      Tipos de servicio; una versión por service_type_id con clave sustituta
+      md5(service_type_id).
+    columns:
+      - name: service_type_key
+        description: "Clave sustituta: md5(service_type_id)."
+        data_tests:
+          - unique
+          - not_null
+      - name: service_type_id
+        description: "Identificador natural del tipo de servicio."
+        data_tests:
+          - unique
+          - not_null
