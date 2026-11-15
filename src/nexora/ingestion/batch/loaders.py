@@ -3,14 +3,19 @@
 Two ways in, both selected with ``--source``:
 
 * ``tms``: extraction from the operational ``tms`` schema. Each
-  ``tms.<table>`` (``carriers``, ``routes``, ``service_types`` and
-  ``shipments``) is read by ``updated_at`` within the window
+  ``tms.<table>`` (the ``carriers``, ``routes`` and ``service_types``
+  dimensions, ``shipments``, the ``vehicles`` and ``drivers`` fleet catalogs,
+  ``trips``, ``trip_legs``, ``shipment_legs``, ``shipment_stops``,
+  ``shipment_events``, ``fuel_transactions``, ``carrier_tenders`` and
+  ``carrier_incidents``) is read by ``updated_at`` within the window
   ``(watermark, max(updated_at)]`` and appended to ``raw.<table>``. Each table
   is handled in a single transaction that first takes the advisory lock
   ``pg_advisory_xact_lock(hashtext('<schema>.<table>'))``, shared with the TMS
   publisher, and only then reads its watermark from ``meta.batch_watermarks``,
   reads the window, inserts it into ``raw`` and advances the watermark. A run
-  without new rows inserts nothing and leaves the watermark as it was.
+  without new rows inserts nothing and leaves the watermark as it was. A
+  missing ``tms`` table raises ``LookupError``; the tables extracted before it
+  in the same run keep their progress.
 * ``files``: load of the ERP files (``customers*.csv``) into ``raw.customers``.
   A file is identified by the SHA-256 of its bytes and registered in
   ``meta.ingested_files``, one row per ``(target_table, source_file_hash)``. A
@@ -21,7 +26,11 @@ Tables are created with explicit DDL: column types and nullability come from the
 contracts declared here, never inferred from the data. Every row carries the
 execution metadata ``run_id``, ``source_system``, ``source_file`` (file name or
 ``<schema>.<table>`` of origin, never a path), ``source_file_hash`` (SHA-256 of
-the file or of the extracted batch) and ``ingested_at``. The connectors only
+the file or of the extracted batch) and ``ingested_at``. The batch hash is the
+SHA-256 of the business rows of the window rendered as ``row(...)::text`` in
+UTC, in ``tms_row_id`` order and joined by ``\\n``; it is computed in the client
+while a server-side cursor reads the window in blocks of ``HASH_FETCH_ROWS``
+rows, so client memory does not grow with the size of the window. The connectors only
 append to ``raw``: they never remove nor rewrite rows.
 
 The schema names are parameters (``tms``, ``raw`` and ``meta`` by default), so
@@ -31,6 +40,7 @@ the same functions can run against isolated schemas.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import uuid
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
@@ -58,12 +68,26 @@ INGESTED_FILES_TABLE: str = "ingested_files"
 ERP_SOURCE_SYSTEM: str = "erp"
 TMS_SOURCE_SYSTEM: str = "tms"
 
+HASH_FETCH_ROWS: int = 10_000
+
 __all__ = [
     "CARRIERS",
+    "CARRIER_INCIDENTS",
+    "CARRIER_TENDERS",
     "CUSTOMERS",
+    "DRIVERS",
+    "FUEL_TRANSACTIONS",
+    "HASH_FETCH_ROWS",
     "ROUTES",
     "SERVICE_TYPES",
     "SHIPMENTS",
+    "SHIPMENT_EVENTS",
+    "SHIPMENT_LEGS",
+    "SHIPMENT_STOPS",
+    "TMS_TABLES",
+    "TRIPS",
+    "TRIP_LEGS",
+    "VEHICLES",
     "Column",
     "ExtractResult",
     "FileResult",
@@ -75,6 +99,7 @@ __all__ = [
     "run_files",
     "run_tms",
     "should_skip",
+    "stream_batch_hash",
 ]
 
 
@@ -213,11 +238,202 @@ SERVICE_TYPES = RawTable(
     ),
 )
 
-# Every raw table of the contract.
-RAW_TABLES: tuple[RawTable, ...] = (CUSTOMERS, CARRIERS, ROUTES, SERVICE_TYPES, SHIPMENTS)
+VEHICLES = RawTable(
+    name="vehicles",
+    source_system=TMS_SOURCE_SYSTEM,
+    columns=(
+        Column("vehicle_id", "text"),
+        Column("carrier_id", "text"),
+        Column("plate", "text"),
+        Column("vehicle_type", "text"),
+        Column("capacity_kg", "numeric(10,1)"),
+        Column("capacity_m3", "numeric(8,2)"),
+        Column("fuel_type", "text"),
+        Column("km_per_gallon", "numeric(6,2)"),
+        Column("purchase_date", "date"),
+    ),
+)
 
-# Extraction order from tms: dimensions first, then the shipments that reference them.
-TMS_TABLES: tuple[RawTable, ...] = (CARRIERS, ROUTES, SERVICE_TYPES, SHIPMENTS)
+DRIVERS = RawTable(
+    name="drivers",
+    source_system=TMS_SOURCE_SYSTEM,
+    columns=(
+        Column("driver_id", "text"),
+        Column("carrier_id", "text"),
+        Column("driver_name", "text"),
+        Column("driver_document", "text"),
+        Column("driver_phone", "text"),
+        Column("driver_email", "text"),
+        Column("license_type", "text"),
+        Column("hire_date", "date"),
+        Column("base_city", "text"),
+    ),
+)
+
+TRIPS = RawTable(
+    name="trips",
+    source_system=TMS_SOURCE_SYSTEM,
+    columns=(
+        Column("trip_id", "text"),
+        Column("carrier_id", "text"),
+        Column("vehicle_id", "text"),
+        Column("driver_id", "text"),
+        Column("trip_type", "text"),
+        Column("origin_city", "text"),
+        Column("start_ts", "timestamptz"),
+        Column("end_ts", "timestamptz", nullable=True),
+        Column("distance_km", "numeric(8,1)"),
+        Column("empty_km", "numeric(8,1)"),
+        Column("stopped_minutes", "integer"),
+        Column("fuel_gallons", "numeric(8,2)"),
+    ),
+)
+
+TRIP_LEGS = RawTable(
+    name="trip_legs",
+    source_system=TMS_SOURCE_SYSTEM,
+    columns=(
+        Column("trip_id", "text"),
+        Column("leg_sequence", "integer"),
+        Column("origin_city", "text"),
+        Column("destination_city", "text"),
+        Column("distance_km", "numeric(8,1)"),
+        Column("departure_ts", "timestamptz"),
+        Column("arrival_ts", "timestamptz", nullable=True),
+        Column("loaded_flag", "boolean"),
+    ),
+)
+
+SHIPMENT_LEGS = RawTable(
+    name="shipment_legs",
+    source_system=TMS_SOURCE_SYSTEM,
+    columns=(
+        Column("shipment_id", "text"),
+        Column("trip_id", "text"),
+        Column("leg_sequence", "integer"),
+        Column("loaded_km", "numeric(8,1)"),
+        Column("weight_kg", "numeric(12,3)"),
+        Column("volume_m3", "numeric(10,3)"),
+    ),
+)
+
+SHIPMENT_STOPS = RawTable(
+    name="shipment_stops",
+    source_system=TMS_SOURCE_SYSTEM,
+    columns=(
+        Column("shipment_id", "text"),
+        Column("stop_sequence", "integer"),
+        Column("stop_type", "text"),
+        Column("city", "text"),
+        Column("planned_ts", "timestamptz"),
+        Column("actual_ts", "timestamptz", nullable=True),
+    ),
+)
+
+SHIPMENT_EVENTS = RawTable(
+    name="shipment_events",
+    source_system=TMS_SOURCE_SYSTEM,
+    columns=(
+        Column("event_id", "text"),
+        Column("shipment_id", "text"),
+        Column("event_ts", "timestamptz"),
+        Column("event_type", "text", nullable=True),
+        Column("location_city", "text", nullable=True),
+        Column("latitude", "numeric(9,6)"),
+        Column("longitude", "numeric(9,6)"),
+        Column("severity", "text"),
+    ),
+)
+
+FUEL_TRANSACTIONS = RawTable(
+    name="fuel_transactions",
+    source_system=TMS_SOURCE_SYSTEM,
+    columns=(
+        Column("fuel_txn_id", "text"),
+        Column("trip_id", "text"),
+        Column("vehicle_id", "text"),
+        Column("driver_id", "text"),
+        Column("txn_ts", "timestamptz"),
+        Column("station_city", "text"),
+        Column("gallons", "numeric(8,2)", nullable=True),
+        Column("price_per_gallon_amount", "numeric(10,2)"),
+        Column("total_amount", "numeric(12,2)", nullable=True),
+        Column("currency_code", "text"),
+        Column("odometer_km", "numeric(10,1)"),
+    ),
+)
+
+CARRIER_TENDERS = RawTable(
+    name="carrier_tenders",
+    source_system=TMS_SOURCE_SYSTEM,
+    columns=(
+        Column("tender_id", "text"),
+        Column("shipment_id", "text"),
+        Column("carrier_id", "text"),
+        Column("offered_ts", "timestamptz"),
+        Column("responded_ts", "timestamptz", nullable=True),
+        Column("response_status", "text", nullable=True),
+        Column("offered_rate_amount", "numeric(12,2)"),
+        Column("accepted_rate_amount", "numeric(12,2)", nullable=True),
+        Column("currency_code", "text"),
+    ),
+)
+
+CARRIER_INCIDENTS = RawTable(
+    name="carrier_incidents",
+    source_system=TMS_SOURCE_SYSTEM,
+    columns=(
+        Column("incident_id", "text"),
+        Column("shipment_id", "text"),
+        Column("carrier_id", "text"),
+        Column("incident_type", "text"),
+        Column("severity", "text"),
+        Column("damage_flag", "boolean"),
+        Column("claim_amount", "numeric(12,2)", nullable=True),
+        Column("currency_code", "text"),
+        Column("reported_ts", "timestamptz"),
+        Column("responded_ts", "timestamptz"),
+        Column("resolved_ts", "timestamptz", nullable=True),
+    ),
+)
+
+# Every raw table of the contract.
+RAW_TABLES: tuple[RawTable, ...] = (
+    CUSTOMERS,
+    CARRIERS,
+    ROUTES,
+    SERVICE_TYPES,
+    SHIPMENTS,
+    VEHICLES,
+    DRIVERS,
+    TRIPS,
+    TRIP_LEGS,
+    SHIPMENT_LEGS,
+    SHIPMENT_STOPS,
+    SHIPMENT_EVENTS,
+    FUEL_TRANSACTIONS,
+    CARRIER_TENDERS,
+    CARRIER_INCIDENTS,
+)
+
+# Extraction order from tms: dimensions, shipments and fleet catalogs first, then
+# trips and legs, and last the entities that hang from shipments and trips.
+TMS_TABLES: tuple[RawTable, ...] = (
+    CARRIERS,
+    ROUTES,
+    SERVICE_TYPES,
+    SHIPMENTS,
+    VEHICLES,
+    DRIVERS,
+    TRIPS,
+    TRIP_LEGS,
+    SHIPMENT_LEGS,
+    SHIPMENT_STOPS,
+    SHIPMENT_EVENTS,
+    FUEL_TRANSACTIONS,
+    CARRIER_TENDERS,
+    CARRIER_INCIDENTS,
+)
 
 # Tables loaded from ERP files.
 FILE_TABLES: tuple[RawTable, ...] = (CUSTOMERS,)
@@ -274,13 +490,44 @@ def _window_condition(window: watermark.Window) -> tuple[sql.SQL, tuple[datetime
     return sql.SQL("updated_at > %s and updated_at <= %s"), (window.lower, window.upper)
 
 
-def _batch_statement(table: RawTable, source: sql.Identifier, condition: sql.SQL) -> sql.Composed:
-    """Return the count and SHA-256 of the rows of the window, in ``tms_row_id`` order."""
+def batch_rows_statement(
+    table: RawTable, source: sql.Identifier, condition: sql.SQL
+) -> sql.Composed:
+    """Return the query of the business rows of the window as text, in ``tms_row_id`` order."""
     return sql.SQL(
-        "select count(*), encode(sha256(convert_to(coalesce("
-        "string_agg(row({columns})::text, E'\\n' order by tms_row_id), ''), 'UTF8')), 'hex') "
-        "from {source} where {condition}"
+        "select row({columns})::text from {source} where {condition} order by tms_row_id"
     ).format(columns=_column_list(table.column_names), source=source, condition=condition)
+
+
+def stream_batch_hash(
+    conn: psycopg.Connection,
+    table: RawTable,
+    source: sql.Identifier,
+    condition: sql.SQL,
+    params: Sequence[object],
+    fetch_rows: int = HASH_FETCH_ROWS,
+) -> tuple[int, str]:
+    """Return the row count and SHA-256 of the window, reading it in blocks.
+
+    A server-side cursor reads the business rows as ``row(...)::text`` in
+    ``tms_row_id`` order, ``fetch_rows`` at a time; the digest receives each row
+    in UTF-8 with ``\\n`` between rows. It must run inside the extraction
+    transaction, after ``set local timezone to 'UTC'``, so timestamps render in
+    UTC. An empty window gives the SHA-256 of the empty string.
+    """
+    if fetch_rows < 1:
+        raise ValueError(f"fetch_rows debe ser 1 o más, no {fetch_rows}")
+    digest = hashlib.sha256()
+    count = 0
+    with conn.cursor(name=f"batch_hash_{table.name}") as cursor:
+        cursor.execute(batch_rows_statement(table, source, condition), tuple(params))
+        while rows := cursor.fetchmany(fetch_rows):
+            for (text,) in rows:
+                if count:
+                    digest.update(b"\n")
+                digest.update(text.encode("utf-8"))
+                count += 1
+    return count, digest.hexdigest()
 
 
 def extract_table(
@@ -291,14 +538,17 @@ def extract_table(
     tms_schema: str = TMS_SCHEMA,
     raw_schema: str = RAW_SCHEMA,
     meta_schema: str = META_SCHEMA,
+    fetch_rows: int = HASH_FETCH_ROWS,
 ) -> ExtractResult:
     """Extract the new rows of ``tms.<table>`` into ``raw.<table>`` in one transaction.
 
     Order inside the transaction: UTC time zone for the batch hash, advisory
     lock of the source table, and only then the read of its watermark. The
-    window is ``(watermark, max(updated_at)]``; its rows are appended to
-    ``raw`` with the execution metadata and the watermark moves to the upper
-    bound. Without new rows nothing is inserted and the watermark is kept.
+    window is ``(watermark, max(updated_at)]``; its count and hash are computed
+    by ``stream_batch_hash`` in blocks of ``fetch_rows`` rows, its rows are
+    appended to ``raw`` with the execution metadata and the watermark moves to
+    the upper bound. Without new rows nothing is inserted and the watermark is
+    kept.
     """
     source_table = lock_key(tms_schema, table.name)
     source = sql.Identifier(tms_schema, table.name)
@@ -330,11 +580,7 @@ def extract_table(
             )
 
         condition, params = _window_condition(window)
-        cur.execute(_batch_statement(table, source, condition), params)
-        row = cur.fetchone()
-        if row is None:
-            raise RuntimeError(f"{source_table}: no se pudo calcular el lote")
-        expected, batch_hash = row
+        expected, batch_hash = stream_batch_hash(conn, table, source, condition, params, fetch_rows)
 
         cur.execute(
             sql.SQL(
@@ -376,12 +622,20 @@ def run_tms(
     raw_schema: str = RAW_SCHEMA,
     meta_schema: str = META_SCHEMA,
     tables: Sequence[RawTable] = TMS_TABLES,
+    fetch_rows: int = HASH_FETCH_ROWS,
 ) -> list[ExtractResult]:
-    """Extract every ``tms`` table by watermark, one transaction per table."""
+    """Extract every ``tms`` table by watermark, one transaction per table.
+
+    Tables run in ``tables`` order; if one is missing in ``tms`` the
+    ``LookupError`` stops the run and the tables already extracted keep their
+    rows and watermarks.
+    """
     run = run_id if run_id is not None else uuid.uuid4().hex
     ingested_at = datetime.now(UTC)
     return [
-        extract_table(conn, table, run, ingested_at, tms_schema, raw_schema, meta_schema)
+        extract_table(
+            conn, table, run, ingested_at, tms_schema, raw_schema, meta_schema, fetch_rows
+        )
         for table in tables
     ]
 
@@ -562,6 +816,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="identificador de la ejecución. Por defecto: un UUID nuevo",
     )
+    parser.add_argument(
+        "--tms-schema",
+        default=TMS_SCHEMA,
+        help=f"esquema de origen de las tablas TMS (--source tms). Por defecto: {TMS_SCHEMA}",
+    )
+    parser.add_argument(
+        "--raw-schema",
+        default=RAW_SCHEMA,
+        help=f"esquema de destino de las tablas raw. Por defecto: {RAW_SCHEMA}",
+    )
+    parser.add_argument(
+        "--meta-schema",
+        default=META_SCHEMA,
+        help=("esquema de batch_watermarks e ingested_files. " f"Por defecto: {META_SCHEMA}"),
+    )
     return parser
 
 
@@ -602,10 +871,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"run_id: {run_id}")
     with psycopg.connect(dsn) as conn:
         if args.source == "tms":
-            for extracted in run_tms(conn, run_id):
+            for extracted in run_tms(
+                conn,
+                run_id,
+                tms_schema=args.tms_schema,
+                raw_schema=args.raw_schema,
+                meta_schema=args.meta_schema,
+            ):
                 _print_extract(extracted)
         else:
-            files = run_files(conn, args.input, run_id)
+            files = run_files(
+                conn,
+                args.input,
+                run_id,
+                raw_schema=args.raw_schema,
+                meta_schema=args.meta_schema,
+            )
             if not files:
                 print(f"sin archivos ERP en {args.input}")
             for loaded in files:

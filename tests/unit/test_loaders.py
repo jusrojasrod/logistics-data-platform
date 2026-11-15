@@ -1,18 +1,56 @@
-"""Pruebas unitarias del cargador batch: hash SHA-256 de archivo y decisión de
-omitir un archivo ya cargado.
+"""Pruebas unitarias del cargador batch: hash SHA-256 de archivo, decisión de
+omitir un archivo ya cargado, contratos de las tablas TMS, hash del lote leído
+por bloques y opciones de esquema de la línea de comandos.
 
-No usan base de datos: los archivos se crean en ``tmp_path`` y la decisión de
-omitir se toma solo con la función pura ``should_skip``.
+No usan base de datos: los archivos se crean en ``tmp_path``, la decisión de
+omitir se toma solo con la función pura ``should_skip`` y el hash del lote se
+calcula sobre un cursor simulado que entrega filas de texto.
 """
 
 from __future__ import annotations
 
 import hashlib
+import inspect
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
+from psycopg import sql
 
-from nexora.ingestion.batch.loaders import should_skip
+from nexora.generators.fleet import DRIVERS_COLUMNS, VEHICLES_COLUMNS
+from nexora.generators.operations import (
+    CARRIER_INCIDENTS_COLUMNS,
+    CARRIER_TENDERS_COLUMNS,
+    FUEL_TRANSACTIONS_COLUMNS,
+    SHIPMENT_EVENTS_COLUMNS,
+    SHIPMENT_LEGS_COLUMNS,
+    SHIPMENT_STOPS_COLUMNS,
+    TRIP_LEGS_COLUMNS,
+    TRIPS_COLUMNS,
+)
+from nexora.ingestion.batch import loaders
+from nexora.ingestion.batch.loaders import (
+    CARRIER_INCIDENTS,
+    CARRIER_TENDERS,
+    DRIVERS,
+    FUEL_TRANSACTIONS,
+    HASH_FETCH_ROWS,
+    METADATA_COLUMNS,
+    RAW_TABLES,
+    SHIPMENT_EVENTS,
+    SHIPMENT_LEGS,
+    SHIPMENT_STOPS,
+    SHIPMENTS,
+    TMS_TABLES,
+    TRIP_LEGS,
+    TRIPS,
+    VEHICLES,
+    RawTable,
+    build_parser,
+    should_skip,
+    stream_batch_hash,
+)
 from nexora.ingestion.batch.readers import HASH_CHUNK_BYTES, file_sha256
 
 SAMPLE_BYTES = b"shipment_id,customer_id\nSHP-000001,CUS-0001\n"
@@ -118,3 +156,262 @@ def test_renamed_copy_of_loaded_file_is_skipped(tmp_path: Path) -> None:
     loaded = {file_sha256(loaded_file)}
 
     assert should_skip(file_sha256(renamed_copy), loaded) is True
+
+
+# --- Contratos de las tablas TMS ---------------------------------------------
+
+GENERATOR_COLUMNS: dict[str, tuple[RawTable, tuple[str, ...]]] = {
+    "vehicles": (VEHICLES, VEHICLES_COLUMNS),
+    "drivers": (DRIVERS, DRIVERS_COLUMNS),
+    "trips": (TRIPS, TRIPS_COLUMNS),
+    "trip_legs": (TRIP_LEGS, TRIP_LEGS_COLUMNS),
+    "shipment_legs": (SHIPMENT_LEGS, SHIPMENT_LEGS_COLUMNS),
+    "shipment_stops": (SHIPMENT_STOPS, SHIPMENT_STOPS_COLUMNS),
+    "shipment_events": (SHIPMENT_EVENTS, SHIPMENT_EVENTS_COLUMNS),
+    "fuel_transactions": (FUEL_TRANSACTIONS, FUEL_TRANSACTIONS_COLUMNS),
+    "carrier_tenders": (CARRIER_TENDERS, CARRIER_TENDERS_COLUMNS),
+    "carrier_incidents": (CARRIER_INCIDENTS, CARRIER_INCIDENTS_COLUMNS),
+}
+
+NULLABLE_COLUMNS: dict[str, set[str]] = {
+    "vehicles": set(),
+    "drivers": set(),
+    "trips": {"end_ts"},
+    "trip_legs": {"arrival_ts"},
+    "shipment_legs": set(),
+    "shipment_stops": {"actual_ts"},
+    "shipment_events": {"event_type", "location_city"},
+    "fuel_transactions": {"gallons", "total_amount"},
+    "carrier_tenders": {"responded_ts", "response_status", "accepted_rate_amount"},
+    "carrier_incidents": {"claim_amount", "resolved_ts"},
+}
+
+
+@pytest.mark.parametrize("name", list(GENERATOR_COLUMNS))
+def test_contract_equals_generator_columns(name: str) -> None:
+    table, generator_columns = GENERATOR_COLUMNS[name]
+
+    assert table.name == name
+    assert table.source_system == "tms"
+    assert table.column_names == generator_columns
+
+
+@pytest.mark.parametrize("name", list(NULLABLE_COLUMNS))
+def test_contract_nullable_columns(name: str) -> None:
+    table, _ = GENERATOR_COLUMNS[name]
+
+    assert {column.name for column in table.columns if column.nullable} == NULLABLE_COLUMNS[name]
+
+
+def test_tms_tables_order() -> None:
+    assert [table.name for table in TMS_TABLES] == [
+        "carriers",
+        "routes",
+        "service_types",
+        "shipments",
+        "vehicles",
+        "drivers",
+        "trips",
+        "trip_legs",
+        "shipment_legs",
+        "shipment_stops",
+        "shipment_events",
+        "fuel_transactions",
+        "carrier_tenders",
+        "carrier_incidents",
+    ]
+
+
+def test_raw_tables_include_every_tms_table_and_customers() -> None:
+    names = [table.name for table in RAW_TABLES]
+
+    assert len(names) == len(set(names)) == 15
+    assert set(names) == {table.name for table in TMS_TABLES} | {"customers"}
+
+
+def test_new_raw_table_ddl_has_metadata_and_no_unique() -> None:
+    statement = SHIPMENT_EVENTS.create_statement("it_x_raw").as_string(None)
+
+    assert statement.startswith('create table if not exists "it_x_raw"."shipment_events" (')
+    assert '"event_type" text,' in statement
+    assert '"event_ts" timestamptz not null' in statement
+    for column in METADATA_COLUMNS:
+        assert f'"{column.name}" {column.sql_type} not null' in statement
+    assert "unique" not in statement
+    assert "primary key" not in statement
+
+
+def test_module_has_no_string_agg() -> None:
+    assert "string_agg" not in inspect.getsource(loaders)
+
+
+# --- Hash del lote por bloques -----------------------------------------------
+
+
+class FakeNamedCursor:
+    """Cursor de servidor simulado: entrega filas ``(texto,)`` por bloques."""
+
+    def __init__(self, rows: Sequence[str]) -> None:
+        self.rows = [(text,) for text in rows]
+        self.position = 0
+        self.statement: str | None = None
+        self.params: tuple[Any, ...] | None = None
+        self.fetch_sizes: list[int] = []
+
+    def __enter__(self) -> FakeNamedCursor:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def execute(self, statement: sql.Composable, params: tuple[Any, ...]) -> None:
+        self.statement = statement.as_string(None)
+        self.params = params
+
+    def fetchmany(self, size: int) -> list[tuple[str]]:
+        self.fetch_sizes.append(size)
+        block = self.rows[self.position : self.position + size]
+        self.position += len(block)
+        return block
+
+
+class FakeConnection:
+    def __init__(self, rows: Sequence[str]) -> None:
+        self.cursor_obj = FakeNamedCursor(rows)
+        self.cursor_names: list[str | None] = []
+
+    def cursor(self, name: str | None = None) -> FakeNamedCursor:
+        self.cursor_names.append(name)
+        return self.cursor_obj
+
+
+BATCH_ROWS = (
+    '(SHP-000001,CUS-0001,"2026-11-01 10:00:00+00")',
+    "(SHP-000002,,áéí)",
+    "(SHP-000003,CUS-0003,)",
+    "(SHP-000004,CUS-0004,x)",
+    "(SHP-000005,CUS-0005,y)",
+)
+WINDOW = sql.SQL("updated_at > %s and updated_at <= %s")
+
+
+def reference_hash(rows: Sequence[str]) -> str:
+    return hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
+
+
+def run_hash(rows: Sequence[str], fetch_rows: int = HASH_FETCH_ROWS) -> tuple[FakeConnection, Any]:
+    conn = FakeConnection(rows)
+    result = stream_batch_hash(
+        conn,  # type: ignore[arg-type]
+        SHIPMENTS,
+        sql.Identifier("it_x_tms", "shipments"),
+        WINDOW,
+        ("lower", "upper"),
+        fetch_rows,
+    )
+    return conn, result
+
+
+@pytest.mark.parametrize("fetch_rows", [1, 2, 5, HASH_FETCH_ROWS], ids=lambda n: f"fetch_{n}")
+def test_stream_hash_equals_joined_rows(fetch_rows: int) -> None:
+    _, (count, digest) = run_hash(BATCH_ROWS, fetch_rows)
+
+    assert count == len(BATCH_ROWS)
+    assert digest == reference_hash(BATCH_ROWS)
+
+
+def test_stream_hash_reads_in_blocks_of_fetch_rows() -> None:
+    conn, _ = run_hash(BATCH_ROWS, 2)
+
+    assert conn.cursor_obj.fetch_sizes == [2, 2, 2, 2]
+    assert conn.cursor_names == ["batch_hash_shipments"]
+
+
+def test_stream_hash_single_row_has_no_separator() -> None:
+    _, (count, digest) = run_hash(BATCH_ROWS[:1], 1)
+
+    assert count == 1
+    assert digest == hashlib.sha256(BATCH_ROWS[0].encode("utf-8")).hexdigest()
+
+
+def test_stream_hash_empty_window_is_hash_of_empty_string() -> None:
+    _, (count, digest) = run_hash((), 3)
+
+    assert count == 0
+    assert digest == EMPTY_SHA256
+
+
+def test_stream_hash_statement_orders_by_tms_row_id_with_params() -> None:
+    conn, _ = run_hash(BATCH_ROWS, 3)
+    columns = ", ".join(f'"{name}"' for name in SHIPMENTS.column_names)
+
+    assert conn.cursor_obj.statement == (
+        f'select row({columns})::text from "it_x_tms"."shipments" '
+        "where updated_at > %s and updated_at <= %s order by tms_row_id"
+    )
+    assert conn.cursor_obj.params == ("lower", "upper")
+
+
+def test_stream_hash_rejects_fetch_rows_below_one() -> None:
+    with pytest.raises(ValueError, match="fetch_rows"):
+        run_hash(BATCH_ROWS, 0)
+
+
+def test_extract_and_run_tms_accept_fetch_rows() -> None:
+    for function in (loaders.extract_table, loaders.run_tms):
+        parameter = inspect.signature(function).parameters["fetch_rows"]
+        assert parameter.default == HASH_FETCH_ROWS
+
+
+# --- Opciones de esquema -----------------------------------------------------
+
+
+def test_schema_options_default_to_tms_raw_meta() -> None:
+    args = build_parser().parse_args(["--source", "tms"])
+
+    assert (args.tms_schema, args.raw_schema, args.meta_schema) == ("tms", "raw", "meta")
+
+
+def test_main_passes_schema_options_to_run_tms(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakeContext:
+        def __enter__(self) -> object:
+            return object()
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def fake_run_tms(conn: object, run_id: str, **kwargs: Any) -> list[object]:
+        calls.append({"run_id": run_id, **kwargs})
+        return []
+
+    monkeypatch.setattr(loaders.psycopg, "connect", lambda dsn: FakeContext())
+    monkeypatch.setattr(loaders, "run_tms", fake_run_tms)
+
+    code = loaders.main(
+        [
+            "--source",
+            "tms",
+            "--dsn",
+            "host=invalid",
+            "--run-id",
+            "r1",
+            "--tms-schema",
+            "it_a_tms",
+            "--raw-schema",
+            "it_a_raw",
+            "--meta-schema",
+            "it_a_meta",
+        ]
+    )
+
+    assert code == 0
+    assert calls == [
+        {
+            "run_id": "r1",
+            "tms_schema": "it_a_tms",
+            "raw_schema": "it_a_raw",
+            "meta_schema": "it_a_meta",
+        }
+    ]
