@@ -11,7 +11,12 @@
 #
 # Uso:
 #   bash scripts/import_superset.sh                    # empaqueta e importa
-#   bash scripts/import_superset.sh --bundle-only F.zip  # solo genera el zip
+#   bash scripts/import_superset.sh --bundle-only dashboards/superset/otif.zip
+#                                                      # solo genera el zip
+#
+# `--bundle-only` solo admite rutas relativas bajo dashboards/superset/ con
+# extensión .zip: ahí el zip está en .gitignore y no se puede versionar, y el
+# bundle lleva la contraseña de la conexión.
 #
 # Variables opcionales: SUPERSET_CONTAINER, SUPERSET_ADMIN_USER,
 # BI_READER_PASSWORD y PYTHON.
@@ -28,8 +33,34 @@ SUPERSET_USER="${SUPERSET_ADMIN_USER:-admin}"
 DATABASE_NAME="nexora"
 
 BUNDLE_ONLY=""
+BUNDLE_ONLY_ARG=""
 if [[ "${1:-}" == "--bundle-only" ]]; then
-    BUNDLE_ONLY="${2:?Falta la ruta del zip: --bundle-only <archivo.zip>}"
+    BUNDLE_ONLY_ARG="${2:?Falta la ruta del zip: --bundle-only dashboards/superset/<archivo>.zip}"
+    # El zip lleva la contraseña en claro y solo git lo ignora dentro de
+    # dashboards/superset/: un destino fuera de ahí podría versionarse.
+    if [[ "${BUNDLE_ONLY_ARG}" == /* ]]; then
+        echo "Error: --bundle-only exige una ruta relativa bajo ${SRC_DIR}/ (recibido: ${BUNDLE_ONLY_ARG})" >&2
+        exit 2
+    fi
+    if [[ "${BUNDLE_ONLY_ARG}" != *.zip ]]; then
+        echo "Error: --bundle-only exige un archivo .zip (recibido: ${BUNDLE_ONLY_ARG})" >&2
+        exit 2
+    fi
+    if [[ -d "${BUNDLE_ONLY_ARG}" ]]; then
+        echo "Error: --bundle-only espera un archivo, no un directorio (recibido: ${BUNDLE_ONLY_ARG})" >&2
+        exit 2
+    fi
+    # realpath -m normaliza `..` y resuelve symlinks existentes: el destino
+    # final debe quedar dentro de la carpeta y no puede escapar por un enlace.
+    BUNDLE_ONLY="$(realpath -m -- "${BUNDLE_ONLY_ARG}")"
+    SRC_DIR_REAL="$(realpath -m -- "${SRC_DIR}")"
+    case "${BUNDLE_ONLY}" in
+        "${SRC_DIR_REAL}/"*) ;;
+        *)
+            echo "Error: --bundle-only solo admite destinos bajo ${SRC_DIR}/ (recibido: ${BUNDLE_ONLY_ARG})" >&2
+            exit 2
+            ;;
+    esac
 fi
 
 WORK_DIR="$(mktemp -d)"
@@ -74,8 +105,8 @@ BUNDLE_ZIP="${WORK_DIR}/nexora_dashboards.zip"
 
 if [[ -n "${BUNDLE_ONLY}" ]]; then
     cp "${BUNDLE_ZIP}" "${BUNDLE_ONLY}"
-    echo "Bundle generado en ${BUNDLE_ONLY}"
-    echo "Aviso: ${BUNDLE_ONLY} contiene la contraseña de la conexión ${DATABASE_NAME}; bórralo tras usarlo y no lo versiones." >&2
+    echo "Bundle generado en ${BUNDLE_ONLY_ARG}"
+    echo "Aviso: ${BUNDLE_ONLY_ARG} contiene la contraseña de la conexión ${DATABASE_NAME}; bórralo tras usarlo y no lo versiones." >&2
     exit 0
 fi
 
