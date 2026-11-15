@@ -5,11 +5,11 @@ version: 2
 
 sources:
   - name: tms
-    description: "Sistema de gestión de transporte: envíos, transportistas, rutas y tipos de servicio cargados en raw."
+    description: "Sistema de gestión de transporte: envíos, transportistas, rutas y tipos de servicio extraídos del esquema tms por watermark y cargados en raw."
     schema: raw
     tables:
       - name: shipments
-        description: "Envíos tal como llegan del archivo fuente; append-only, puede contener duplicados y fechas imposibles."
+        description: "Envíos extraídos de tms.shipments tal como están en la fuente; append-only, puede contener duplicados y fechas imposibles."
         columns:
           - name: shipment_id
             description: "Identificador natural del envío."
@@ -44,16 +44,16 @@ sources:
           - name: run_id
             description: "Identificador de la ejecución de carga."
           - name: source_system
-            description: "Sistema de origen declarado por el cargador."
+            description: "Sistema de origen declarado por el conector."
           - name: source_file
-            description: "Nombre del archivo cargado."
+            description: "Archivo cargado o <esquema>.<tabla> de origen; en esta fuente, tms.<tabla>."
           - name: source_file_hash
-            description: "SHA-256 del archivo cargado."
+            description: "SHA-256 del archivo o del lote extraído; en esta fuente, del lote extraído de tms."
           - name: ingested_at
             description: "Momento de la carga en raw."
 
       - name: carriers
-        description: "Transportistas."
+        description: "Transportistas extraídos de tms.carriers."
         columns:
           - name: carrier_id
             description: "Identificador natural del transportista."
@@ -68,16 +68,16 @@ sources:
           - name: run_id
             description: "Identificador de la ejecución de carga."
           - name: source_system
-            description: "Sistema de origen declarado por el cargador."
+            description: "Sistema de origen declarado por el conector."
           - name: source_file
-            description: "Nombre del archivo cargado."
+            description: "Archivo cargado o <esquema>.<tabla> de origen; en esta fuente, tms.<tabla>."
           - name: source_file_hash
-            description: "SHA-256 del archivo cargado."
+            description: "SHA-256 del archivo o del lote extraído; en esta fuente, del lote extraído de tms."
           - name: ingested_at
             description: "Momento de la carga en raw."
 
       - name: routes
-        description: "Rutas origen-destino."
+        description: "Rutas origen-destino extraídas de tms.routes."
         columns:
           - name: route_id
             description: "Identificador natural de la ruta."
@@ -94,16 +94,16 @@ sources:
           - name: run_id
             description: "Identificador de la ejecución de carga."
           - name: source_system
-            description: "Sistema de origen declarado por el cargador."
+            description: "Sistema de origen declarado por el conector."
           - name: source_file
-            description: "Nombre del archivo cargado."
+            description: "Archivo cargado o <esquema>.<tabla> de origen; en esta fuente, tms.<tabla>."
           - name: source_file_hash
-            description: "SHA-256 del archivo cargado."
+            description: "SHA-256 del archivo o del lote extraído; en esta fuente, del lote extraído de tms."
           - name: ingested_at
             description: "Momento de la carga en raw."
 
       - name: service_types
-        description: "Tipos de servicio con su SLA."
+        description: "Tipos de servicio con su SLA, extraídos de tms.service_types."
         columns:
           - name: service_type_id
             description: "Identificador natural del tipo de servicio."
@@ -114,16 +114,16 @@ sources:
           - name: run_id
             description: "Identificador de la ejecución de carga."
           - name: source_system
-            description: "Sistema de origen declarado por el cargador."
+            description: "Sistema de origen declarado por el conector."
           - name: source_file
-            description: "Nombre del archivo cargado."
+            description: "Archivo cargado o <esquema>.<tabla> de origen; en esta fuente, tms.<tabla>."
           - name: source_file_hash
-            description: "SHA-256 del archivo cargado."
+            description: "SHA-256 del archivo o del lote extraído; en esta fuente, del lote extraído de tms."
           - name: ingested_at
             description: "Momento de la carga en raw."
 
   - name: erp
-    description: "Sistema ERP: maestro de clientes cargado en raw."
+    description: "Sistema ERP: maestro de clientes cargado en raw desde archivos customers*.csv, identificados por hash."
     schema: raw
     tables:
       - name: customers
@@ -146,7 +146,7 @@ sources:
           - name: run_id
             description: "Identificador de la ejecución de carga."
           - name: source_system
-            description: "Sistema de origen declarado por el cargador."
+            description: "Sistema de origen declarado por el conector."
           - name: source_file
             description: "Nombre del archivo cargado."
           - name: source_file_hash
