@@ -341,3 +341,23 @@ FUEL_STOP_KM: float = 600.0
 
 # Currency of every amount of the operation.
 CURRENCY_CODE: str = "COP"
+
+# Defect injection rates of the operational tables, over the base rows of each
+# table. Every affected row carries a single defect; the critical nulls of a
+# table alternate between its two columns.
+EVENT_DUPLICATE_RATE: float = 0.02  # DQ-001: byte-identical copy of an event.
+EVENT_CRITICAL_NULL_RATE: float = 0.01
+EVENT_IMPOSSIBLE_DATE_RATE: float = 0.005
+FUEL_CRITICAL_NULL_RATE: float = 0.01
+TENDER_NO_RESPONSE_RATE: float = 0.02  # DQ-014: tender without an answer.
+INCIDENT_UNCLOSED_RATE: float = 0.01
+
+EVENT_CRITICAL_NULL_COLUMNS: tuple[str, ...] = ("event_type", "location_city")
+FUEL_CRITICAL_NULL_COLUMNS: tuple[str, ...] = ("gallons", "total_amount")
+
+# An impossible event date lands this many days after the real one.
+IMPOSSIBLE_DATE_SHIFT_DAYS: int = 36_525
+
+# Only incidents reported this many days before the end of the cutoff date are
+# old enough to be expected closed, so only they can lose their resolution.
+UNCLOSED_MIN_AGE_DAYS: int = 30

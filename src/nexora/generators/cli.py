@@ -1,8 +1,9 @@
 """Command line entry point of the synthetic data generator.
 
-The command orchestrates the generator modules and writes, into ``--out``, one
-CSV per source entity plus ``defect_manifest.json``. It does not compute any
-value itself: volumes come from the profile, defects from ``defects.py``.
+The command writes, into ``--out``, one CSV per source entity plus
+``defect_manifest.json``. It does not compute any value itself: volumes come
+from the profile and the files from ``dataset.write_dataset``, which streams
+the rows to disk, so every profile runs in bounded memory.
 """
 
 from __future__ import annotations
@@ -12,20 +13,16 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from nexora.generators.config import HISTORY_MONTHS
-from nexora.generators.defects import build_manifest, inject_defects, write_manifest
-from nexora.generators.dimensions import write_dimensions
-from nexora.generators.shipments import (
-    SHIPMENTS_COLUMNS,
-    SHIPMENTS_ENTITY,
-    ShipmentTable,
-    generate_shipments,
-)
+from nexora.generators.dataset import write_dataset
 
-# Distinct base shipments per volume profile: 50 000 in demo, 200 000 in local.
-# Injected duplicates are written on top of this base.
+# Distinct base shipments per volume profile: 50 000 in demo, 200 000 in local
+# and 2 000 000 in benchmark. Injected duplicates are written on top of this
+# base. The benchmark profile only measures generation to files: its folder is
+# never published to the operational database.
 SCALE_SHIPMENTS: dict[str, int] = {
     "demo": 50_000,
     "local": 200_000,
+    "benchmark": 2_000_000,
 }
 
 DEFAULT_SCALE: str = "demo"
@@ -38,7 +35,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="nexora-generate",
         description=(
-            "Genera los CSV sintéticos de origen (envíos y dimensiones) y el manifiesto "
+            "Genera los CSV sintéticos de origen (envíos, dimensiones, flota, viajes, "
+            "tramos, paradas, eventos, combustible, tenders e incidencias) y el manifiesto "
             "de defectos inyectados."
         ),
     )
@@ -46,7 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--scale",
         choices=sorted(SCALE_SHIPMENTS),
         default=DEFAULT_SCALE,
-        help="perfil de volumen: demo (50 000 envíos) o local (200 000). Por defecto: demo",
+        help=(
+            "perfil de volumen: demo (50 000 envíos), local (200 000) o benchmark "
+            "(2 000 000, solo para medir la generación a archivos). Por defecto: demo"
+        ),
     )
     parser.add_argument(
         "--seed",
@@ -77,17 +78,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"--months debe ser positivo: {args.months}")
 
     out = args.out if args.out is not None else Path(DEFAULT_OUTPUT_ROOT) / args.scale
-    base_rows = generate_shipments(SCALE_SHIPMENTS[args.scale], args.seed, args.months)
-    result = inject_defects(base_rows, args.seed)
-
-    write_dimensions(out)
-    ShipmentTable(name=SHIPMENTS_ENTITY, columns=SHIPMENTS_COLUMNS, rows=result.rows).write_csv(out)
-    write_manifest(out, build_manifest(args.scale, args.seed, args.months, result))
+    summary = write_dataset(out, args.scale, SCALE_SHIPMENTS[args.scale], args.seed, args.months)
 
     print(
-        f"generado: {out} ({result.shipments} envíos base, "
-        f"{len(result.rows)} filas con duplicados, {len(result.defects)} tipos de defecto)"
+        f"generado: {out} ({summary.shipments} envíos base, "
+        f"{len(summary.defects)} tipos de defecto)"
     )
+    for name, rows in summary.files.items():
+        print(f"  {name}: {rows} filas")
     return 0
 
 

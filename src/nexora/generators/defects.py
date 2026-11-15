@@ -15,7 +15,13 @@ exact and each affected row carries a single defect. The draw only needs to know
 which base rows are delivered: ``plan_shipment_defects`` turns that mask into a
 ``ShipmentDefectPlan`` and ``apply_shipment_defects`` applies it to one row at a
 time, so a stream of rows gets the same defects as ``inject_defects`` on the
-whole list. The manifest holds no
+whole list.
+
+The operational tables get their own defect types, injected while the dataset
+is written: ``impossible_date`` (an event a century after the real one),
+``no_response`` (a tender without answer) and ``unclosed`` (an old incident
+without resolution), plus duplicates and critical nulls of events and fuel
+purchases. Every manifest entry names its table. The manifest holds no
 generation date, output path, version or run id: two runs with the same
 arguments produce byte-identical files.
 """
@@ -43,6 +49,11 @@ MANIFEST_FILE_NAME: str = "defect_manifest.json"
 DUPLICATE_TYPE: str = "duplicate"
 CRITICAL_NULL_TYPE: str = "critical_null"
 DELIVERED_BEFORE_PICKUP_TYPE: str = "delivered_before_pickup"
+IMPOSSIBLE_DATE_TYPE: str = "impossible_date"
+NO_RESPONSE_TYPE: str = "no_response"
+UNCLOSED_TYPE: str = "unclosed"
+
+SHIPMENTS_TABLE: str = "shipments"
 
 QUARANTINE_ACTION: str = "quarantine"
 ALERT_ACTION: str = "alert"
@@ -50,6 +61,7 @@ ALERT_ACTION: str = "alert"
 # Rule of the canonical catalog that detects each defect.
 DUPLICATE_RULE_ID: str = "DQ-001"
 DELIVERED_BEFORE_PICKUP_RULE_ID: str = "DQ-002"
+NO_RESPONSE_RULE_ID: str = "DQ-014"
 CRITICAL_NULL_RULE_IDS: dict[str, str] = {
     "promised_delivery_ts": "DQ-011",
     "customer_id": "DQ-005",
@@ -65,18 +77,24 @@ RATE_DECIMALS: int = 5
 
 @dataclass(frozen=True)
 class DefectEntry:
-    """One manifest entry: a defect type on a single column."""
+    """One manifest entry: a defect type on a single column of a table.
 
+    ``rule_id`` and ``expected_action`` are None while the rule catalog has no
+    rule for the defect.
+    """
+
+    table: str
     type: str
     column: str
     count: int
     rate: float
-    rule_id: str
-    expected_action: str
+    rule_id: str | None
+    expected_action: str | None
 
     def to_dict(self) -> dict[str, Any]:
         """Return the entry with the field order of the manifest schema."""
         return {
+            "table": self.table,
             "type": self.type,
             "column": self.column,
             "count": self.count,
@@ -182,6 +200,7 @@ def plan_shipment_defects(delivered: Sequence[int], seed: int = 42) -> ShipmentD
             null_columns[index] = column
         null_entries.append(
             DefectEntry(
+                table=SHIPMENTS_TABLE,
                 type=CRITICAL_NULL_TYPE,
                 column=column,
                 count=count,
@@ -196,6 +215,7 @@ def plan_shipment_defects(delivered: Sequence[int], seed: int = 42) -> ShipmentD
 
     defects = (
         DefectEntry(
+            table=SHIPMENTS_TABLE,
             type=DUPLICATE_TYPE,
             column="shipment_id",
             count=duplicate_count,
@@ -205,6 +225,7 @@ def plan_shipment_defects(delivered: Sequence[int], seed: int = 42) -> ShipmentD
         ),
         *null_entries,
         DefectEntry(
+            table=SHIPMENTS_TABLE,
             type=DELIVERED_BEFORE_PICKUP_TYPE,
             column="delivered_at",
             count=before_pickup_count,
@@ -265,17 +286,24 @@ def build_manifest(
     scale: str,
     seed: int,
     months: int,
-    result: InjectionResult,
+    shipments: int,
+    tables: Mapping[str, int],
+    defects: Sequence[DefectEntry],
     cutoff: date = CUTOFF_DATE,
 ) -> dict[str, Any]:
-    """Return the manifest with the field order of the schema in the contract."""
+    """Return the manifest with the field order of the schema in the contract.
+
+    ``tables`` maps every table to its base rows, without injected copies, in
+    the order given.
+    """
     return {
         "scale": scale,
         "seed": seed,
         "months": months,
         "cutoff_date": cutoff.isoformat(),
-        "shipments": result.shipments,
-        "defects": [entry.to_dict() for entry in result.defects],
+        "shipments": shipments,
+        "tables": dict(tables),
+        "defects": [entry.to_dict() for entry in defects],
     }
 
 
