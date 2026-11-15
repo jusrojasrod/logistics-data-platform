@@ -71,6 +71,13 @@ CRITICAL_NULL_COLUMNS: tuple[str, ...] = (
     "carrier_id",
 )
 
+# Late arrivals when publishing into the operational TMS: about 2 % of the
+# shipments become available between 2 and 7 days after their pickup date. The
+# choice is a hash of shipment_id, so it is deterministic and every copy of a
+# shipment shares the same availability date.
+LATE_ARRIVAL_PCT: int = 2
+LATE_ARRIVAL_LAG_DAYS: tuple[int, int] = (2, 7)
+
 
 @dataclass(frozen=True)
 class City:

@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Genera el perfil indicado en data/<perfil> y lo carga en el esquema raw.
+# Genera el perfil indicado en data/<perfil> y publica los envíos y las
+# dimensiones TMS en el esquema tms. No carga raw: raw se alimenta con el
+# conector batch de ingesta.
 #
 # Uso: scripts/seed_db.sh demo|local
 #
-# La carga es idempotente por hash SHA-256 de archivo: con la misma semilla
-# los CSV son idénticos y una segunda ejecución no inserta filas nuevas.
-# raw es append-only; para partir de una base vacía se usa `make reset`.
-# Conexión: NEXORA_PG_DSN si está definida; si no, el valor por defecto del loader.
+# La publicación solo inserta filas nuevas: las dimensiones por su id y los
+# envíos por shipment_id, así una segunda ejecución con la misma semilla no
+# inserta nada. Para partir de una base vacía se usa `make reset`.
+# Conexión: NEXORA_TMS_DSN y TMS_WRITER_PASSWORD, del entorno o de `.env` en la
+# raíz del repo (el script se ejecuta desde ahí).
 # Intérprete: el del entorno virtual activo; si no hay, `.venv` del repo;
 # si tampoco existe, `python3` del PATH.
 set -euo pipefail
@@ -31,6 +34,7 @@ case "$SCALE" in
 esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
 
 if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
     PYTHON="${VIRTUAL_ENV}/bin/python"
@@ -45,5 +49,5 @@ OUT_DIR="${REPO_ROOT}/data/${SCALE}"
 echo "Generando perfil '${SCALE}' en data/${SCALE}"
 "$PYTHON" -m nexora.generators.cli --scale "$SCALE" --out "$OUT_DIR"
 
-echo "Cargando data/${SCALE} en raw"
-"$PYTHON" -m nexora.ingestion.batch.loaders --input "$OUT_DIR"
+echo "Publicando data/${SCALE} en tms"
+"$PYTHON" -m nexora.generators.tms_publisher --input "$OUT_DIR"
