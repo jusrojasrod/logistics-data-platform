@@ -1,0 +1,51 @@
+slice_name: OTIF mensual
+description: >-
+  OTIF por mes de recogida: razón de sumas de envíos OTIF entre envíos
+  cerrados del dataset de operación. Los meses sin envíos cerrados quedan sin
+  datos.
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  viz_type: echarts_timeseries_line
+  x_axis: pickup_date
+  time_grain_sqla: P1M
+  x_axis_sort_asc: true
+  metrics:
+  - otif_pct
+  groupby: []
+  adhoc_filters:
+  - clause: WHERE
+    subject: pickup_date
+    operator: TEMPORAL_RANGE
+    comparator: No filter
+    expressionType: SIMPLE
+  order_desc: true
+  row_limit: 10000
+  truncate_metric: true
+  show_empty_columns: true
+  comparison_type: values
+  annotation_layers: []
+  x_axis_title: Mes
+  x_axis_title_margin: 15
+  y_axis_title: OTIF %
+  y_axis_title_margin: 30
+  y_axis_title_position: Left
+  seriesType: line
+  markerEnabled: true
+  markerSize: 6
+  show_legend: false
+  x_axis_time_format: '%Y-%m'
+  rich_tooltip: true
+  tooltipTimeFormat: '%Y-%m'
+  y_axis_format: .1%
+  truncateXAxis: true
+  y_axis_bounds:
+  - null
+  - null
+  extra_form_data: {}
+query_context: null
+cache_timeout: null
+uuid: f0274d4d-e6c1-4bb0-aaea-1e1aac22802b
+version: 1.0.0
+dataset_uuid: efd84eaa-5ccd-4cb5-a58a-3f55af421b00
