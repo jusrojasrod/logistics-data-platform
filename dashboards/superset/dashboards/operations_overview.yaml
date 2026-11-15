@@ -1,0 +1,94 @@
+dashboard_title: Operación
+description: >-
+  Seguimiento mensual del OTIF sobre el mart de operación. El filtro «Mes»
+  acota el periodo sobre la fecha de recogida (pickup_date).
+css: ''
+slug: operations-overview
+certified_by: ''
+certification_details: ''
+published: true
+uuid: 5b43e3d3-08a3-4124-9782-fb43ca25ebb5
+position:
+  CHART-otif-monthly:
+    children: []
+    id: CHART-otif-monthly
+    meta:
+      chartId: 1
+      height: 50
+      sliceName: OTIF mensual
+      uuid: f0274d4d-e6c1-4bb0-aaea-1e1aac22802b
+      width: 12
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-operations
+    type: CHART
+  DASHBOARD_VERSION_KEY: v2
+  GRID_ID:
+    children:
+    - ROW-operations
+    id: GRID_ID
+    parents:
+    - ROOT_ID
+    type: GRID
+  HEADER_ID:
+    id: HEADER_ID
+    meta:
+      text: Operación
+    type: HEADER
+  ROOT_ID:
+    children:
+    - GRID_ID
+    id: ROOT_ID
+    type: ROOT
+  ROW-operations:
+    children:
+    - CHART-otif-monthly
+    id: ROW-operations
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    type: ROW
+metadata:
+  timed_refresh_immune_slices: []
+  expanded_slices: {}
+  refresh_frequency: 0
+  default_filters: '{}'
+  chart_configuration:
+    '1':
+      id: 1
+      crossFilters:
+        scope: global
+        chartsInScope: []
+  global_chart_configuration:
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+    chartsInScope:
+    - 1
+  cross_filters_enabled: false
+  native_filter_configuration:
+  - id: NATIVE_FILTER-operations-month
+    controlValues:
+      enableEmptyFilter: false
+    name: Mes
+    filterType: filter_time
+    targets:
+    - {}
+    defaultDataMask:
+      extraFormData: {}
+      filterState: {}
+      ownState: {}
+    cascadeParentIds: []
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+    type: NATIVE_FILTER
+    description: >-
+      Rango de meses sobre la fecha de recogida (pickup_date), columna temporal
+      del dataset mart_operations.
+version: 1.0.0

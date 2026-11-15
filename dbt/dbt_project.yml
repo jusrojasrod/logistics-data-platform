@@ -32,6 +32,7 @@ models:
       +schema: marts
       +materialized: table
       +tags: ["marts"]
+      +grants: {select: ['bi_reader']}
 
 seeds:
   nexora:

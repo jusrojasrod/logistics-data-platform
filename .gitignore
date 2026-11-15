@@ -33,6 +33,9 @@ tmp/
 logs/
 *.log
 
+# Bundles de Superset (la fuente versionada son los YAML)
+dashboards/superset/*.zip
+
 # Editores y sistema
 .idea/
 .vscode/

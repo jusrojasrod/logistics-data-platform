@@ -1,0 +1,120 @@
+table_name: mart_operations
+main_dttm_col: pickup_date
+description: >-
+  Agregado diario de operación: una fila por fecha de recogida, cliente y ruta
+  observados. Solo guarda conteos aditivos; el OTIF se calcula como razón de
+  sumas en la métrica «OTIF %».
+default_endpoint: null
+offset: 0
+cache_timeout: null
+catalog: null
+schema: marts
+sql: null
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+uuid: efd84eaa-5ccd-4cb5-a58a-3f55af421b00
+metrics:
+- metric_name: otif_pct
+  verbose_name: OTIF %
+  metric_type: null
+  expression: CAST(SUM(otif_shipments) AS NUMERIC) / NULLIF(SUM(closed_shipments), 0)
+  description: >-
+    OP-01 OTIF: envíos cerrados a tiempo y completos entre envíos cerrados,
+    como razón de sumas (nunca promedio de porcentajes). Sin envíos cerrados
+    el resultado es nulo y se muestra como sin datos.
+  d3format: .1%
+  currency: null
+  extra: null
+  warning_text: null
+columns:
+- column_name: pickup_date
+  verbose_name: Fecha de recogida
+  is_dttm: true
+  is_active: true
+  type: DATE
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: Día de recogida del envío; columna temporal del dataset.
+  python_date_format: null
+  extra: null
+- column_name: customer_key
+  verbose_name: Clave de cliente
+  is_dttm: false
+  is_active: true
+  type: TEXT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: Clave de la dimensión de cliente; nula si el cliente no se resolvió.
+  python_date_format: null
+  extra: null
+- column_name: route_key
+  verbose_name: Clave de ruta
+  is_dttm: false
+  is_active: true
+  type: TEXT
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: Clave de la dimensión de ruta.
+  python_date_format: null
+  extra: null
+- column_name: closed_shipments
+  verbose_name: Envíos cerrados
+  is_dttm: false
+  is_active: true
+  type: BIGINT
+  advanced_data_type: null
+  groupby: false
+  filterable: true
+  expression: null
+  description: Envíos cerrados; denominador del OTIF.
+  python_date_format: null
+  extra: null
+- column_name: otif_shipments
+  verbose_name: Envíos OTIF
+  is_dttm: false
+  is_active: true
+  type: BIGINT
+  advanced_data_type: null
+  groupby: false
+  filterable: true
+  expression: null
+  description: Envíos cerrados a tiempo y completos; numerador del OTIF.
+  python_date_format: null
+  extra: null
+- column_name: on_time_shipments
+  verbose_name: Envíos a tiempo
+  is_dttm: false
+  is_active: true
+  type: BIGINT
+  advanced_data_type: null
+  groupby: false
+  filterable: true
+  expression: null
+  description: Envíos cerrados entregados a tiempo.
+  python_date_format: null
+  extra: null
+- column_name: in_full_shipments
+  verbose_name: Envíos completos
+  is_dttm: false
+  is_active: true
+  type: BIGINT
+  advanced_data_type: null
+  groupby: false
+  filterable: true
+  expression: null
+  description: Envíos cerrados entregados completos.
+  python_date_format: null
+  extra: null
+version: 1.0.0
+database_uuid: 4243893f-90c3-46e5-9bbc-1fb10659a432

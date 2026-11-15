@@ -1,0 +1,15 @@
+database_name: nexora
+sqlalchemy_uri: postgresql+psycopg2://bi_reader:XXXXXXXXXX@postgres:5432/nexora
+cache_timeout: null
+expose_in_sqllab: true
+allow_run_async: false
+allow_ctas: false
+allow_cvas: false
+allow_dml: false
+allow_file_upload: false
+impersonate_user: false
+extra:
+  allows_virtual_table_explore: true
+  schemas_allowed_for_file_upload: []
+uuid: 4243893f-90c3-46e5-9bbc-1fb10659a432
+version: 1.0.0

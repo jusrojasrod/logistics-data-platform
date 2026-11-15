@@ -1,0 +1,48 @@
+version: 2
+
+# Agregado de consumo para operación; no es un hecho. Las claves de dimensión
+# pueden llegar nulas desde fact_shipments y se conservan como grupo propio:
+# el test de unicidad agrupa con GROUP BY, que trata los nulos como iguales,
+# así que también detecta duplicados en esos grupos. La alerta de integridad
+# referencial de esas claves vive en fact_shipments.
+
+models:
+  - name: mart_operations
+    description: >
+      Grano: una fila por combinación observada de pickup_date × customer_key ×
+      route_key en fact_shipments, con al menos un envío, tenga o no envíos
+      cerrados; no se genera rejilla completa. Solo guarda conteos aditivos.
+      El porcentaje de OTIF no se almacena: se calcula al consultar como
+      Σ(otif_shipments) / Σ(closed_shipments), con NULL si el denominador es 0.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - pickup_date
+              - customer_key
+              - route_key
+    columns:
+      - name: pickup_date
+        description: "Fecha de negocio: fecha de recogida del envío; parte del grano."
+        data_tests:
+          - not_null
+      - name: customer_key
+        description: >
+          Clave sustituta del cliente; parte del grano. Nula si el envío llega
+          sin cliente; esos envíos forman su propio grupo.
+      - name: route_key
+        description: >
+          Clave sustituta de la ruta; parte del grano. Nula si el envío llega
+          sin ruta; esos envíos forman su propio grupo.
+      - name: closed_shipments
+        description: >
+          Envíos cerrados (entregados o con fallo definitivo) del grupo:
+          Σ(closed_flag). Denominador del OTIF.
+      - name: otif_shipments
+        description: >
+          Envíos entregados a tiempo y completos del grupo: Σ(otif_flag).
+          Numerador del OTIF.
+      - name: on_time_shipments
+        description: "Envíos entregados a tiempo del grupo: Σ(on_time_flag)."
+      - name: in_full_shipments
+        description: "Envíos entregados completos del grupo: Σ(in_full_flag)."
