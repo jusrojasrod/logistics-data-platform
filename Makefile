@@ -34,6 +34,7 @@ logs: ## Logs del servicio indicado: make logs SERVICE=airflow-scheduler
 lint: ## Análisis estático
 	ruff check src tests scripts
 	black --check src tests scripts
+	pre-commit run sqlfluff-lint --all-files
 
 format: ## Formatea el código
 	ruff check --fix src tests scripts
