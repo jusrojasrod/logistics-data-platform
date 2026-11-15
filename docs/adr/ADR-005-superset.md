@@ -22,6 +22,6 @@ Usar Apache Superset 6 como herramienta principal. Se conecta al warehouse con u
 ## Consecuencias
 
 - Costo cero y RLS disponible en la edición abierta.
-- Los dashboards se exportan y versionan como artefactos.
+- Los YAML de `dashboards/superset/`, incluida `databases/`, son la fuente de verdad versionada; el `.zip` exportado es un artefacto local y no se versiona, y la contraseña no se guarda en los YAML.
 - Curva de aprendizaje mayor que un BI de escritorio; no hay lenguaje tipo DAX.
 - La capa semántica vive en el warehouse y en dbt, no en la herramienta: eso evita dependencia.
