@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import csv
 from bisect import bisect
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta, timezone
 from itertools import accumulate
@@ -435,13 +435,15 @@ def _build_row(rng: Random, index: int, catalogs: _Catalogs) -> dict[str, str]:
     }
 
 
-def generate_shipments(
+def iter_shipments(
     count: int, seed: int = 42, months: int = HISTORY_MONTHS
-) -> tuple[dict[str, str], ...]:
-    """Return ``count`` shipment rows with the business columns of the contract.
+) -> Iterator[dict[str, str]]:
+    """Yield ``count`` shipment rows with the business columns of the contract.
 
     Rows are numbered from ``SHP-000001`` and pulled from ``seed`` alone; the
-    month window ends at the fixed ``CUTOFF_DATE``.
+    month window ends at the fixed ``CUTOFF_DATE``. Rows come out one at a time
+    in a fixed draw order, so iterating twice with the same arguments yields the
+    same rows without keeping any of them in memory.
     """
     if count < 1:
         raise ValueError(f"count must be positive: {count}")
@@ -453,7 +455,15 @@ def generate_shipments(
         services=_service_catalog(),
         pickup_days=_pickup_days(months),
     )
-    return tuple(_build_row(rng, index, catalogs) for index in range(1, count + 1))
+    for index in range(1, count + 1):
+        yield _build_row(rng, index, catalogs)
+
+
+def generate_shipments(
+    count: int, seed: int = 42, months: int = HISTORY_MONTHS
+) -> tuple[dict[str, str], ...]:
+    """Return every row of ``iter_shipments`` with the same arguments."""
+    return tuple(iter_shipments(count, seed, months))
 
 
 def build_shipment_table(count: int, seed: int = 42, months: int = HISTORY_MONTHS) -> ShipmentTable:
