@@ -5,7 +5,7 @@ SCALE ?= demo
 
 .DEFAULT_GOAL := help
 
-.PHONY: help up up-bi up-streaming down reset ps logs lint format test dbt-parse dbt-build data export-superset import-superset clean
+.PHONY: help up up-bi up-streaming down reset ps logs lint format test test-integration dbt-parse dbt-build data export-superset import-superset clean
 
 help: ## Muestra esta ayuda
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -42,6 +42,9 @@ format: ## Formatea el código
 
 test: ## Pruebas unitarias
 	pytest -q
+
+test-integration: ## Pruebas de integración contra la base local
+	NEXORA_INTEGRATION=1 pytest -q tests/integration
 
 dbt-parse: ## Valida el proyecto dbt
 	$(DBT) parse --project-dir dbt --profiles-dir dbt
