@@ -322,3 +322,22 @@ DRIVER_FAMILY_NAMES: tuple[str, ...] = (
     "Nevadal",
     "Bosquerial",
 )
+
+
+# Child rows per base shipment, as averages over the population. Stops are a
+# pickup, a delivery and up to two transit hubs; every shipment gets an accepted
+# tender and half of them a previous offer to another carrier.
+EVENTS_PER_SHIPMENT: int = 10
+STOPS_PER_SHIPMENT: int = 3
+TENDERS_PER_SHIPMENT: float = 1.5
+INCIDENTS_PER_SHIPMENT: float = 0.1
+
+# Trips, legs and fuel purchases exist only for the owned fleet. After a loaded
+# trip, this share of trips adds an empty repositioning trip without shipments.
+REPOSITIONING_TRIP_RATE: float = 0.03
+
+# Kilometres covered between two fuel purchases of a trip.
+FUEL_STOP_KM: float = 600.0
+
+# Currency of every amount of the operation.
+CURRENCY_CODE: str = "COP"
