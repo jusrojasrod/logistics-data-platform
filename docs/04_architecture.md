@@ -51,17 +51,22 @@ Orquestación: Apache Airflow 3. Transformación: dbt. Todo corre en contenedore
 
 ```text
 generador ─► CSV TMS ─► publicador (tms_writer) ─► tms.<tabla> ─► conector por watermark (etl_writer) ─► raw.<tabla>
-generador ─► customers.csv (ERP) ───────────────────────────────► conector por hash (etl_writer) ──────► raw.customers
+generador ─► CSV ERP y CRM ─────────────────────────────────────► conector por hash (etl_writer) ──────► raw.<tabla>
+generador ─► late/<tabla>_late.csv (ERP y CRM) ─────────────────► conector por hash, segunda carga ────► raw.<tabla>
 
-CSV TMS: carriers, routes, service_types, shipments, vehicles, drivers, trips, trip_legs,
-         shipment_legs, shipment_stops, shipment_events, fuel_transactions,
-         carrier_tenders, carrier_incidents
+CSV TMS:     carriers, routes, service_types, shipments, vehicles, drivers, trips, trip_legs,
+             shipment_legs, shipment_stops, shipment_events, fuel_transactions,
+             carrier_tenders, carrier_incidents
+CSV ERP:     customers, tariffs, invoices, invoice_lines, payments, carrier_settlements,
+             shipment_costs
+CSV CRM:     contacts, contracts, leads
+Tardíos:     late/<tabla>_late.csv de las entidades ERP y CRM, salvo customers
 ```
 
-1. El generador escribe en flujo los CSV de cada perfil: envíos, dimensiones TMS, flota propia (`vehicles`, `drivers`), viajes y tramos (`trips`, `trip_legs`), envíos por tramo (`shipment_legs`), paradas (`shipment_stops`), eventos (`shipment_events`), combustible (`fuel_transactions`), ofertas (`carrier_tenders`) e incidencias (`carrier_incidents`). El publicador inserta todas esas entidades en el esquema `tms`, que simula la base operativa del TMS, por bloques y en el mismo orden en que se extraen: solo inserciones, con `updated_at` del reloj de la base en cada fila. El perfil `benchmark` solo se genera a archivos y no se publica.
+1. El generador escribe en flujo los CSV de cada perfil: envíos, dimensiones TMS, flota propia (`vehicles`, `drivers`), viajes y tramos (`trips`, `trip_legs`), envíos por tramo (`shipment_legs`), paradas (`shipment_stops`), eventos (`shipment_events`), combustible (`fuel_transactions`), ofertas (`carrier_tenders`) e incidencias (`carrier_incidents`), y los del ERP (`customers`, tarifas, facturas, líneas de factura, pagos, liquidaciones a transportadores y costos de flota) y del CRM (contactos, contratos y oportunidades). Cerca del 3 % de las filas de cada entidad ERP y CRM, salvo `customers`, va a `late/<tabla>_late.csv` según el hash de su clave natural, para simular archivos que llegan tarde. El publicador inserta las entidades TMS en el esquema `tms`, que simula la base operativa del TMS, por bloques y en el mismo orden en que se extraen: solo inserciones, con `updated_at` del reloj de la base en cada fila. El perfil `benchmark` solo se genera a archivos y no se publica.
 2. Airflow dispara la ingesta según el calendario del dominio. `dag_ingest_batch` corre con el calendario `0 2 * * *`, sin catchup, con una ejecución activa a la vez y 3 reintentos por tarea.
 3. La tarea `extract_tms` extrae cada `tms.<tabla>` a `raw.<tabla>` con la ventana `(watermark, max(updated_at)]`; en la misma transacción inserta en `raw` y avanza `meta.batch_watermarks`. Sin filas nuevas no inserta nada.
-4. La tarea `load_erp_files` carga los `customers*.csv` en `raw.customers`; un archivo cuyo SHA-256 ya está en `meta.ingested_files` se omite.
+4. La tarea `load_erp_files` carga los archivos ERP y CRM de la carpeta de la escala configurada, cada uno en su `raw.<tabla>`, y después los tardíos de su subcarpeta `late/`; un archivo cuyo SHA-256 ya está en `meta.ingested_files` se omite. Si falta `late/`, la tarea falla. `scripts/seed_db.sh` hace las mismas dos cargas tras publicar `tms`.
 5. Los datos aterrizan en `raw` con metadatos de ingestión (`run_id`, `source_system`, `source_file`, `source_file_hash`, `ingested_at`). Las tareas del DAG solo llaman a los conectores de `src/nexora/ingestion/batch`: no contienen lógica de negocio.
 6. Staging tipa, deduplica y valida; separa válidos y rechazados.
 7. dbt construye dimensiones, hechos y puente en `core`, y agregados en `marts`.

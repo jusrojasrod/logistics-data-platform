@@ -40,7 +40,7 @@ Airflow tarda cerca de un minuto en migrar la base la primera vez. Si `make up` 
 ## 4. Reproceso
 
 1. Identificar la ventana afectada.
-2. Reejecutar la ingesta: la extracción de `tms` continúa desde el watermark de cada tabla (§4.1) y los archivos ERP se deciden por su hash (§4.2).
+2. Reejecutar la ingesta: la extracción de `tms` continúa desde el watermark de cada tabla (§4.1) y los archivos ERP y CRM se deciden por su hash (§4.2).
 3. Reconstruir los modelos afectados: `dbt build --select <modelo>+`.
 4. Verificar conteos contra la fuente.
 5. Registrar el incidente y la causa.
@@ -99,20 +99,43 @@ rm -rf data/tmp/benchmark
 
 Las cifras medidas se registran en `benchmarks/results/` con su fecha, comando y salida.
 
-### 4.2 Archivos ERP
+### 4.2 Archivos ERP y CRM
+
+Los archivos de un perfil se cargan en dos pasos: primero la carpeta, con `customers.csv` y los nueve CSV del ERP y del CRM, y después su subcarpeta `late/`, con los nueve tardíos `<tabla>_late.csv`. Cada paso es una ejecución con su `run_id`:
 
 ```bash
 python -m nexora.ingestion.batch.loaders --source files --input data/demo
+python -m nexora.ingestion.batch.loaders --source files --input data/demo/late
 ```
 
-Un archivo cuyo hash ya está en `meta.ingested_files` se omite con `0` filas, aunque tenga otro nombre; un archivo modificado tiene un hash nuevo y se carga. Para volver a cargar a propósito un archivo ya registrado, se borra su fila del registro y se ejecuta de nuevo la carga:
+`bash scripts/seed_db.sh demo` hace lo mismo tras generar el perfil y publicar `tms`, y la tarea `load_erp_files` de `dag_ingest_batch` también, sobre la carpeta de su escala. La carga no entra en subcarpetas: sin el segundo paso, los tardíos no llegan a `raw`.
+
+Un archivo cuyo hash ya está en `meta.ingested_files` se omite con `0` filas (`omitido: <tabla> <- <archivo> …`), aunque tenga otro nombre; un archivo modificado tiene un hash nuevo y se carga (`cargado: …`). Repetir los dos pasos sin cambios en los archivos no inserta filas.
+
+Si falta `late/`, el segundo paso falla con `FileNotFoundError: no existe la carpeta <carpeta>/late`, y en el DAG la tarea `load_erp_files` falla igual, después de haber cargado la carpeta principal. Pasa con una carpeta generada por una versión del generador anterior a los archivos tardíos. Se corrige generando de nuevo la carpeta y repitiendo la carga; los archivos ya registrados se omiten:
+
+```bash
+bash scripts/seed_db.sh demo          # o: make data SCALE=demo, y después los dos pasos de carga
+```
+
+Archivos registrados y tardíos por tabla. Tras cargar los dos pasos, cada tabla con tardíos tiene dos filas en el registro, con hashes distintos:
 
 ```bash
 $PSQL -c "select target_table, source_file, source_file_hash, row_count from meta.ingested_files order by ingested_at"
-$PSQL -c "delete from meta.ingested_files where target_table = 'customers' and source_file_hash = '<hash>'"
+$PSQL -c "select target_table, sum(row_count) filter (where source_file not like '%\_late.csv') as principal, sum(row_count) filter (where source_file like '%\_late.csv') as tardio, count(distinct source_file_hash) as hashes from meta.ingested_files group by 1 order by 1"
 ```
 
-La recarga añade otra copia de los clientes en `raw.customers`; `stg_erp__customers` conserva una fila por `customer_id`, la de `ingested_at` más reciente.
+`source_file` guarda solo el nombre del archivo (`invoices_late.csv`), sin `late/`. Si una tabla muestra `principal` pero no `tardio`, falta el segundo paso. Entre los dos pasos, `raw` puede tener filas hijas sin su padre, por ejemplo líneas de factura cuya factura está en `invoices_late.csv`; tras el segundo paso no quedan huérfanos.
+
+Para volver a cargar a propósito un archivo ya registrado, principal o tardío, se borra su fila del registro y se ejecuta de nuevo el paso que lo carga:
+
+```bash
+$PSQL -c "delete from meta.ingested_files where target_table = 'customers' and source_file_hash = '<hash>'"
+$PSQL -c "delete from meta.ingested_files where target_table = 'invoices' and source_file = 'invoices_late.csv' and source_file_hash = '<hash>'"
+python -m nexora.ingestion.batch.loaders --source files --input data/demo/late
+```
+
+La recarga añade otra copia de las filas del archivo en `raw.<tabla>`, porque `raw` es append-only. `stg_erp__customers` conserva una fila por `customer_id`, la de `ingested_at` más reciente; las nueve tablas ERP y CRM nuevas aún no tienen staging, así que una recarga deja en ellas filas repetidas por su clave natural.
 
 ## 5. Archivo y restauración
 
