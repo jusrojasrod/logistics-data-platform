@@ -1,20 +1,32 @@
 """Pruebas de la escritura en flujo del conjunto completo: equivalencia de
 ``shipments.csv`` con la inyección sobre la lista, determinismo, manifiesto
-reproducible desde los CSV y referencias de los hijos a envíos base."""
+reproducible desde los CSV, referencias de los hijos a envíos base, archivos
+operativos independientes del ERP y del CRM, y reparto de las filas ERP y CRM
+entre el archivo principal y el tardío."""
 
 from __future__ import annotations
 
 import csv
 import hashlib
+import json
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from nexora.generators import dataset
 from nexora.generators.config import HISTORY_MONTHS, UNCLOSED_MIN_AGE_DAYS
-from nexora.generators.dataset import TMS_TABLE_ORDER, DatasetSummary, write_dataset
-from nexora.generators.defects import RATE_DECIMALS, inject_defects
+from nexora.generators.dataset import (
+    LATE_FILE_KEYS,
+    TMS_TABLE_ORDER,
+    DatasetSummary,
+    write_dataset,
+)
+from nexora.generators.defects import MANIFEST_FILE_NAME, RATE_DECIMALS, inject_defects
+from nexora.generators.dimensions import DimensionTable
+from nexora.generators.erp import ShipmentFinance
+from nexora.generators.late_files import is_late, late_file_name, late_key
 from nexora.generators.shipments import CUTOFF_END, generate_shipments
 
 SEED = 42
@@ -28,18 +40,42 @@ CHILD_TABLES = (
     "shipment_legs",
 )
 
+# Tablas ERP y CRM en el orden del manifiesto, sin ``customers``.
+LATE_TABLES = (
+    "tariffs",
+    "contacts",
+    "contracts",
+    "leads",
+    "invoices",
+    "invoice_lines",
+    "payments",
+    "carrier_settlements",
+    "shipment_costs",
+)
+
+# Archivos que ya existían antes del ERP y del CRM: las 14 tablas TMS y los clientes.
+OPERATIONAL_FILES = tuple(f"{name}.csv" for name in (*TMS_TABLE_ORDER, "customers"))
+
 UNCLOSED_REPORTED_BEFORE = CUTOFF_END - timedelta(days=UNCLOSED_MIN_AGE_DAYS)
 
 
+def read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+        return list(reader.fieldnames or []), rows
+
+
 def read_rows(directory: Path, table: str) -> list[dict[str, str]]:
-    with (directory / f"{table}.csv").open(encoding="utf-8", newline="") as handle:
-        return list(csv.DictReader(handle))
+    return read_csv(directory / f"{table}.csv")[1]
 
 
 def file_digests(directory: Path) -> dict[str, str]:
+    """Huella de cada archivo de la carpeta, subcarpeta ``late/`` incluida."""
     return {
-        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(directory.iterdir())
+        path.relative_to(directory).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(directory.rglob("*"))
+        if path.is_file()
     }
 
 
@@ -79,6 +115,7 @@ def test_two_runs_write_identical_bytes(written: DatasetSummary, tmp_path: Path)
         files=written.files,
         tables=written.tables,
         defects=written.defects,
+        late_files=written.late_files,
         manifest=second.manifest,
     )
 
@@ -87,7 +124,81 @@ def test_summary_counts_match_files(written: DatasetSummary) -> None:
     for name, rows in written.files.items():
         with (written.directory / name).open(encoding="utf-8", newline="") as handle:
             assert sum(1 for _ in csv.DictReader(handle)) == rows, name
-    assert set(written.files) == {f"{name}.csv" for name in (*TMS_TABLE_ORDER, "customers")}
+    assert set(written.files) == {
+        *OPERATIONAL_FILES,
+        *(f"{name}.csv" for name in LATE_TABLES),
+        *(f"late/{name}_late.csv" for name in LATE_TABLES),
+    }
+
+
+def test_operational_files_do_not_depend_on_erp_and_crm(
+    written: DatasetSummary, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Las 15 tablas de antes salen con los mismos bytes sin generar ERP ni CRM."""
+
+    def empty(table: DimensionTable) -> DimensionTable:
+        return DimensionTable(table.name, table.source_system, table.columns, ())
+
+    real_contacts, real_contracts = dataset.build_contacts, dataset.build_contracts
+    real_leads, real_tariffs = dataset.build_leads, dataset.build_tariffs
+    monkeypatch.setattr(dataset, "build_contacts", lambda c: empty(real_contacts(c)))
+    monkeypatch.setattr(dataset, "build_contracts", lambda c: empty(real_contracts(c)))
+    monkeypatch.setattr(dataset, "build_leads", lambda c, seed: empty(real_leads(c, seed)))
+    monkeypatch.setattr(
+        dataset, "build_tariffs", lambda combos, seed, months: empty(real_tariffs(combos, seed))
+    )
+    monkeypatch.setattr(dataset.TariffCombos, "add", lambda self, row: None)
+    monkeypatch.setattr(
+        dataset, "shipment_finance", lambda row, context, rng, ids: ShipmentFinance()
+    )
+
+    bare = write_dataset(tmp_path / "bare", "demo", SHIPMENTS, SEED, HISTORY_MONTHS)
+    assert all(entry.rows == 0 for entry in bare.late_files)
+    with_erp = file_digests(written.directory)
+    without_erp = file_digests(bare.directory)
+    assert {name: with_erp[name] for name in OPERATIONAL_FILES} == {
+        name: without_erp[name] for name in OPERATIONAL_FILES
+    }
+    assert bare.tables == written.tables
+    assert bare.defects == written.defects
+
+
+def test_late_files_manifest_matches_csv_counts(written: DatasetSummary) -> None:
+    manifest = json.loads((written.directory / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
+    assert list(manifest)[-1] == "late_files"
+    assert tuple(LATE_FILE_KEYS) == LATE_TABLES
+    expected = []
+    for name in LATE_TABLES:
+        main = read_rows(written.directory, name)
+        late = read_csv(written.directory / late_file_name(name))[1]
+        expected.append(
+            {
+                "table": name,
+                "file": f"late/{name}_late.csv",
+                "key": list(LATE_FILE_KEYS[name]),
+                "rows": len(main) + len(late),
+                "late_rows": len(late),
+            }
+        )
+        assert main, name
+    assert manifest["late_files"] == expected
+    assert [entry.to_dict() for entry in written.late_files] == expected
+
+
+def test_each_erp_and_crm_row_lives_in_one_folder(written: DatasetSummary) -> None:
+    """Cada fila va al tardío si y solo si ``is_late`` de su clave natural."""
+    for name in LATE_TABLES:
+        columns = LATE_FILE_KEYS[name]
+        main_header, main = read_csv(written.directory / f"{name}.csv")
+        late_header, late = read_csv(written.directory / late_file_name(name))
+        assert main_header == late_header, name
+        main_keys = [late_key(row, columns) for row in main]
+        late_keys = [late_key(row, columns) for row in late]
+        assert not any(is_late(key) for key in main_keys), name
+        assert all(is_late(key) for key in late_keys), name
+        assert not set(main_keys) & set(late_keys), name
+        assert len(set(main_keys)) + len(set(late_keys)) == len(main) + len(late), name
+    assert any(entry.late_rows for entry in written.late_files)
 
 
 def test_manifest_tables_are_base_rows_in_order(

@@ -21,9 +21,11 @@ The operational tables get their own defect types, injected while the dataset
 is written: ``impossible_date`` (an event a century after the real one),
 ``no_response`` (a tender without answer) and ``unclosed`` (an old incident
 without resolution), plus duplicates and critical nulls of events and fuel
-purchases. Every manifest entry names its table. The manifest holds no
-generation date, output path, version or run id: two runs with the same
-arguments produce byte-identical files.
+purchases. Every manifest entry names its table. The manifest also lists,
+per ERP and CRM table, its late file, the columns of its natural key and how
+many rows went to it; the keys themselves are read from the late file. The
+manifest holds no generation date, output path, version or run id: two runs
+with the same arguments produce byte-identical files.
 """
 
 from __future__ import annotations
@@ -101,6 +103,31 @@ class DefectEntry:
             "rate": self.rate,
             "rule_id": self.rule_id,
             "expected_action": self.expected_action,
+        }
+
+
+@dataclass(frozen=True)
+class LateFileEntry:
+    """One manifest entry of the late files: where the late rows of a table went.
+
+    ``rows`` counts every row of the table, main and late files together;
+    ``late_rows`` only those of the late file.
+    """
+
+    table: str
+    file: str
+    key: tuple[str, ...]
+    rows: int
+    late_rows: int
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the entry with the field order of the manifest schema."""
+        return {
+            "table": self.table,
+            "file": self.file,
+            "key": list(self.key),
+            "rows": self.rows,
+            "late_rows": self.late_rows,
         }
 
 
@@ -289,12 +316,13 @@ def build_manifest(
     shipments: int,
     tables: Mapping[str, int],
     defects: Sequence[DefectEntry],
+    late_files: Sequence[LateFileEntry],
     cutoff: date = CUTOFF_DATE,
 ) -> dict[str, Any]:
     """Return the manifest with the field order of the schema in the contract.
 
     ``tables`` maps every table to its base rows, without injected copies, in
-    the order given.
+    the order given; ``late_files`` keeps the order given too.
     """
     return {
         "scale": scale,
@@ -304,6 +332,7 @@ def build_manifest(
         "shipments": shipments,
         "tables": dict(tables),
         "defects": [entry.to_dict() for entry in defects],
+        "late_files": [entry.to_dict() for entry in late_files],
     }
 
 

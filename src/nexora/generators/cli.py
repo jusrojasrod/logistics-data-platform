@@ -35,9 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="nexora-generate",
         description=(
-            "Genera los CSV sintéticos de origen (envíos, dimensiones, flota, viajes, "
-            "tramos, paradas, eventos, combustible, tenders e incidencias) y el manifiesto "
-            "de defectos inyectados."
+            "Genera los CSV sintéticos de origen del TMS (envíos, dimensiones, flota, viajes, "
+            "tramos, paradas, eventos, combustible, tenders e incidencias), del ERP (tarifas, "
+            "facturas, líneas de factura, pagos, liquidaciones de transportistas y costos de "
+            "flota) y del CRM (contactos, contratos y leads), con las filas tardías del ERP y "
+            "del CRM en la subcarpeta late/, y el manifiesto de defectos inyectados."
         ),
     )
     parser.add_argument(
