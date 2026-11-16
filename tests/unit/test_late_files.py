@@ -8,6 +8,7 @@ import pytest
 
 from nexora.generators.config import LATE_DIRECTORY, LATE_FILE_PCT, LATE_FILE_SUFFIX
 from nexora.generators.late_files import is_late, late_file_name, late_key
+from nexora.ingestion.batch import loaders
 
 TARIFF_KEY = ("tariff_id", "valid_from")
 
@@ -20,6 +21,10 @@ def test_late_constants() -> None:
     assert LATE_FILE_PCT == 3
     assert LATE_DIRECTORY == "late"
     assert LATE_FILE_SUFFIX == "_late"
+
+
+def test_late_directory_matches_loader() -> None:
+    assert LATE_DIRECTORY == loaders.LATE_DIRECTORY
 
 
 def test_is_late_matches_hash_rule() -> None:

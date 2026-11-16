@@ -1,6 +1,7 @@
 """Pruebas unitarias del cargador batch: hash SHA-256 de archivo, decisión de
-omitir un archivo ya cargado, contratos de las tablas TMS, hash del lote leído
-por bloques y opciones de esquema de la línea de comandos.
+omitir un archivo ya cargado, contratos de las tablas TMS, ERP y CRM, búsqueda
+de archivos por tabla, hash del lote leído por bloques y opciones de la línea
+de comandos.
 
 No usan base de datos: los archivos se crean en ``tmp_path``, la decisión de
 omitir se toma solo con la función pura ``should_skip`` y el hash del lote se
@@ -18,6 +19,16 @@ from typing import Any
 import pytest
 from psycopg import sql
 
+from nexora.generators.crm import CONTACTS_COLUMNS, CONTRACTS_COLUMNS, LEADS_COLUMNS
+from nexora.generators.dimensions import CUSTOMERS_COLUMNS
+from nexora.generators.erp import (
+    CARRIER_SETTLEMENTS_COLUMNS,
+    INVOICE_LINES_COLUMNS,
+    INVOICES_COLUMNS,
+    PAYMENTS_COLUMNS,
+    SHIPMENT_COSTS_COLUMNS,
+    TARIFFS_COLUMNS,
+)
 from nexora.generators.fleet import DRIVERS_COLUMNS, VEHICLES_COLUMNS
 from nexora.generators.operations import (
     CARRIER_INCIDENTS_COLUMNS,
@@ -32,16 +43,30 @@ from nexora.generators.operations import (
 from nexora.ingestion.batch import loaders
 from nexora.ingestion.batch.loaders import (
     CARRIER_INCIDENTS,
+    CARRIER_SETTLEMENTS,
     CARRIER_TENDERS,
+    CONTACTS,
+    CONTRACTS,
+    CRM_SOURCE_SYSTEM,
+    CUSTOMERS,
     DRIVERS,
+    ERP_SOURCE_SYSTEM,
+    FILE_TABLES,
     FUEL_TRANSACTIONS,
     HASH_FETCH_ROWS,
+    INVOICE_LINES,
+    INVOICES,
+    LATE_DIRECTORY,
+    LEADS,
     METADATA_COLUMNS,
+    PAYMENTS,
     RAW_TABLES,
+    SHIPMENT_COSTS,
     SHIPMENT_EVENTS,
     SHIPMENT_LEGS,
     SHIPMENT_STOPS,
     SHIPMENTS,
+    TARIFFS,
     TMS_TABLES,
     TRIP_LEGS,
     TRIPS,
@@ -51,7 +76,7 @@ from nexora.ingestion.batch.loaders import (
     should_skip,
     stream_batch_hash,
 )
-from nexora.ingestion.batch.readers import HASH_CHUNK_BYTES, file_sha256
+from nexora.ingestion.batch.readers import HASH_CHUNK_BYTES, discover_files, file_sha256
 
 SAMPLE_BYTES = b"shipment_id,customer_id\nSHP-000001,CUS-0001\n"
 
@@ -222,11 +247,12 @@ def test_tms_tables_order() -> None:
     ]
 
 
-def test_raw_tables_include_every_tms_table_and_customers() -> None:
+def test_raw_tables_include_every_tms_and_file_table() -> None:
     names = [table.name for table in RAW_TABLES]
 
-    assert len(names) == len(set(names)) == 15
-    assert set(names) == {table.name for table in TMS_TABLES} | {"customers"}
+    assert len(names) == len(set(names)) == 24
+    assert set(names) == {table.name for table in TMS_TABLES} | {t.name for t in FILE_TABLES}
+    assert not {table.name for table in TMS_TABLES} & {t.name for t in FILE_TABLES}
 
 
 def test_new_raw_table_ddl_has_metadata_and_no_unique() -> None:
@@ -239,6 +265,198 @@ def test_new_raw_table_ddl_has_metadata_and_no_unique() -> None:
         assert f'"{column.name}" {column.sql_type} not null' in statement
     assert "unique" not in statement
     assert "primary key" not in statement
+
+
+# --- Contratos de las tablas ERP y CRM ---------------------------------------
+
+FILE_GENERATOR_COLUMNS: dict[str, tuple[RawTable, tuple[str, ...], str]] = {
+    "customers": (CUSTOMERS, CUSTOMERS_COLUMNS, "erp"),
+    "tariffs": (TARIFFS, TARIFFS_COLUMNS, "erp"),
+    "contacts": (CONTACTS, CONTACTS_COLUMNS, "crm"),
+    "contracts": (CONTRACTS, CONTRACTS_COLUMNS, "crm"),
+    "leads": (LEADS, LEADS_COLUMNS, "crm"),
+    "invoices": (INVOICES, INVOICES_COLUMNS, "erp"),
+    "invoice_lines": (INVOICE_LINES, INVOICE_LINES_COLUMNS, "erp"),
+    "payments": (PAYMENTS, PAYMENTS_COLUMNS, "erp"),
+    "carrier_settlements": (CARRIER_SETTLEMENTS, CARRIER_SETTLEMENTS_COLUMNS, "erp"),
+    "shipment_costs": (SHIPMENT_COSTS, SHIPMENT_COSTS_COLUMNS, "erp"),
+}
+
+NEW_FILE_TABLES = [name for name in FILE_GENERATOR_COLUMNS if name != "customers"]
+
+FILE_NULLABLE_COLUMNS: dict[str, set[str]] = {
+    "tariffs": {"valid_to"},
+    "contacts": set(),
+    "contracts": {"end_date"},
+    "leads": {"expected_close_date"},
+    "invoices": set(),
+    "invoice_lines": set(),
+    "payments": set(),
+    "carrier_settlements": set(),
+    "shipment_costs": set(),
+}
+
+# Tipo SQL de las columnas no textuales de cada tabla nueva; el resto es ``text``.
+FILE_TYPED_COLUMNS: dict[str, dict[str, str]] = {
+    "tariffs": {
+        "valid_from": "date",
+        "valid_to": "date",
+        "base_amount": "numeric(14,2)",
+        "per_km_amount": "numeric(14,2)",
+        "fuel_surcharge_pct": "numeric(5,2)",
+    },
+    "contacts": {},
+    "contracts": {
+        "start_date": "date",
+        "end_date": "date",
+        "payment_term_days": "integer",
+        "otif_target_pct": "numeric(5,2)",
+    },
+    "leads": {
+        "created_date": "date",
+        "estimated_value_amount": "numeric(14,2)",
+        "expected_close_date": "date",
+    },
+    "invoices": {"invoice_date": "date", "due_date": "date", "total_amount": "numeric(14,2)"},
+    "invoice_lines": {
+        "line_number": "integer",
+        "tariff_amount": "numeric(14,2)",
+        "billed_revenue_amount": "numeric(14,2)",
+        "tax_amount": "numeric(14,2)",
+    },
+    "payments": {"paid_date": "date", "payment_amount": "numeric(14,2)"},
+    "carrier_settlements": {
+        "settled_date": "date",
+        "payable_amount": "numeric(14,2)",
+        "deduction_amount": "numeric(14,2)",
+        "fuel_surcharge_amount": "numeric(14,2)",
+    },
+    "shipment_costs": {"cost_date": "date", "cost_amount": "numeric(14,2)"},
+}
+
+
+def test_source_system_constants() -> None:
+    assert (ERP_SOURCE_SYSTEM, CRM_SOURCE_SYSTEM) == ("erp", "crm")
+
+
+def test_late_directory_constant() -> None:
+    assert LATE_DIRECTORY == "late"
+
+
+def test_file_tables_order_and_source_system() -> None:
+    assert [(table.name, table.source_system) for table in FILE_TABLES] == [
+        ("customers", "erp"),
+        ("tariffs", "erp"),
+        ("contacts", "crm"),
+        ("contracts", "crm"),
+        ("leads", "crm"),
+        ("invoices", "erp"),
+        ("invoice_lines", "erp"),
+        ("payments", "erp"),
+        ("carrier_settlements", "erp"),
+        ("shipment_costs", "erp"),
+    ]
+
+
+@pytest.mark.parametrize("name", list(FILE_GENERATOR_COLUMNS))
+def test_file_contract_equals_generator_columns(name: str) -> None:
+    table, generator_columns, source_system = FILE_GENERATOR_COLUMNS[name]
+
+    assert table.name == name
+    assert table.source_system == source_system
+    assert table.column_names == generator_columns
+
+
+@pytest.mark.parametrize("name", NEW_FILE_TABLES)
+def test_file_contract_nullable_columns(name: str) -> None:
+    table, _, _ = FILE_GENERATOR_COLUMNS[name]
+
+    assert {column.name for column in table.columns if column.nullable} == FILE_NULLABLE_COLUMNS[
+        name
+    ]
+
+
+@pytest.mark.parametrize("name", NEW_FILE_TABLES)
+def test_file_contract_types(name: str) -> None:
+    table, _, _ = FILE_GENERATOR_COLUMNS[name]
+    typed = FILE_TYPED_COLUMNS[name]
+
+    assert {column.name: column.sql_type for column in table.columns} == {
+        column: typed.get(column, "text") for column in table.column_names
+    }
+    assert all(column.check is None for column in table.columns)
+
+
+@pytest.mark.parametrize("name", NEW_FILE_TABLES)
+def test_file_table_ddl_has_metadata_and_no_unique(name: str) -> None:
+    table, _, _ = FILE_GENERATOR_COLUMNS[name]
+    statement = table.create_statement("it_x_raw").as_string(None)
+
+    assert statement.startswith(f'create table if not exists "it_x_raw"."{name}" (')
+    for column in table.columns:
+        null = "," if column.nullable else " not null,"
+        assert f'"{column.name}" {column.sql_type}{null}' in statement
+    for column in METADATA_COLUMNS:
+        assert f'"{column.name}" {column.sql_type} not null' in statement
+    assert "unique" not in statement
+    assert "primary key" not in statement
+
+
+# Los 24 CSV de la carpeta principal de un conjunto generado.
+DATASET_FILE_NAMES = [f"{table.name}.csv" for table in RAW_TABLES]
+
+
+def test_discover_files_returns_only_its_table(tmp_path: Path) -> None:
+    for name in DATASET_FILE_NAMES:
+        write_bytes(tmp_path / name, b"x\n")
+
+    assert len(DATASET_FILE_NAMES) == 24
+    for table in FILE_TABLES:
+        assert [path.name for path in discover_files(tmp_path, table.name)] == [f"{table.name}.csv"]
+
+
+def test_discover_files_in_late_directory(tmp_path: Path) -> None:
+    for name in DATASET_FILE_NAMES:
+        write_bytes(tmp_path / name, b"x\n")
+    late = tmp_path / LATE_DIRECTORY
+    late.mkdir()
+    for name in NEW_FILE_TABLES:
+        write_bytes(late / f"{name}_late.csv", b"x\n")
+
+    for table in FILE_TABLES:
+        main_files = [path.name for path in discover_files(tmp_path, table.name)]
+        late_files = [path.name for path in discover_files(late, table.name)]
+        assert main_files == [f"{table.name}.csv"]
+        assert late_files == ([] if table.name == "customers" else [f"{table.name}_late.csv"])
+
+
+def test_files_help_names_erp_and_crm(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--help"])
+    text = capsys.readouterr().out
+
+    assert "ERP y CRM" in text
+    assert "customers*.csv" not in text
+    assert f"{LATE_DIRECTORY}/" in text
+
+
+def test_main_without_files_names_erp_and_crm(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    class FakeContext:
+        def __enter__(self) -> object:
+            return object()
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(loaders.psycopg, "connect", lambda dsn: FakeContext())
+    monkeypatch.setattr(loaders, "run_files", lambda *args, **kwargs: [])
+
+    code = loaders.main(["--source", "files", "--input", str(tmp_path), "--dsn", "host=invalid"])
+
+    assert code == 0
+    assert f"sin archivos ERP ni CRM en {tmp_path}" in capsys.readouterr().out
 
 
 def test_module_has_no_string_agg() -> None:
