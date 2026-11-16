@@ -394,6 +394,7 @@ LIST_FUEL_SURCHARGE_PCT: float = 12.0
 # invoices dated after CUTOFF_DATE are not issued yet. A share of the lines is
 # billed with a small variation against the tariff amount.
 INVOICE_ID_PREFIX: str = "INV"
+INVOICE_LINE_ID_PREFIX: str = "INVL"
 INVOICE_LINE_CONCEPTS: tuple[str, ...] = ("freight", "fuel_surcharge")
 INVOICE_DELAY_DAYS: tuple[int, int] = (0, 3)
 BILLING_VARIANCE_RATE: float = 0.10
