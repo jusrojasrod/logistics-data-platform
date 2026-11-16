@@ -468,3 +468,7 @@ LEAD_STAGES: tuple[str, ...] = ("prospect", "qualified", "proposal", "negotiatio
 LEAD_LOST_STAGE: str = "lost"
 LEAD_VALUE_AMOUNT_RANGE: tuple[int, int] = (5_000_000, 250_000_000)
 LEAD_CLOSE_DAYS: tuple[int, int] = (15, 120)
+
+# Contract start dates are spread by position over CONTRACT_START_LEAD_DAYS
+# before the start of the window, with this stride between customers.
+CONTRACT_START_STRIDE_DAYS: int = 97
