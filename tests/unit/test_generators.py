@@ -4,7 +4,8 @@ manifiesto de defectos y contrato de columnas de ``shipments.csv``.
 El perfil ``demo`` se genera una sola vez por módulo en una carpeta temporal y
 todas las pruebas de contenido leen esa corrida. El perfil ``local`` no se
 genera completo: se comprueba que el CLI pide 200 000 envíos base y que los
-conteos de defectos derivados de esa base son los esperados.
+conteos de defectos derivados de esa base son los esperados. Las entradas del
+manifiesto de las tablas operativas se prueban en ``test_dataset.py``.
 """
 
 from __future__ import annotations
@@ -12,13 +13,14 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from nexora.generators import cli
+from nexora.generators import cli, dataset
 from nexora.generators.config import (
     CRITICAL_NULL_COLUMNS,
     CRITICAL_NULL_RATE,
@@ -48,6 +50,7 @@ from nexora.generators.shipments import SHIPMENTS_COLUMNS
 SEED = 42
 DEMO_SHIPMENTS = 50_000
 LOCAL_SHIPMENTS = 200_000
+BENCHMARK_SHIPMENTS = 2_000_000
 
 EXPECTED_FILES = {
     "shipments.csv",
@@ -55,8 +58,21 @@ EXPECTED_FILES = {
     "carriers.csv",
     "routes.csv",
     "service_types.csv",
+    "vehicles.csv",
+    "drivers.csv",
+    "trips.csv",
+    "trip_legs.csv",
+    "shipment_legs.csv",
+    "shipment_stops.csv",
+    "shipment_events.csv",
+    "fuel_transactions.csv",
+    "carrier_tenders.csv",
+    "carrier_incidents.csv",
     MANIFEST_FILE_NAME,
 }
+
+MANIFEST_KEYS = ["scale", "seed", "months", "cutoff_date", "shipments", "tables", "defects"]
+ENTRY_KEYS = ["table", "type", "column", "count", "rate", "rule_id", "expected_action"]
 
 # Columnas que el contrato declara siempre informadas en el CSV de origen.
 NEVER_NULL_COLUMNS = (
@@ -124,6 +140,11 @@ def parse_ts(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
+def shipment_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Entradas del manifiesto que describen defectos de ``shipments``."""
+    return [entry for entry in manifest["defects"] if entry["table"] == "shipments"]
+
+
 @pytest.fixture(scope="module")
 def demo_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     out = tmp_path_factory.mktemp("demo")
@@ -177,7 +198,7 @@ def test_different_seed_changes_shipments(demo_dir: Path, tmp_path: Path) -> Non
 
 
 def test_manifest_has_no_variable_metadata(manifest: dict[str, Any]) -> None:
-    assert list(manifest) == ["scale", "seed", "months", "cutoff_date", "shipments", "defects"]
+    assert list(manifest) == MANIFEST_KEYS
 
 
 # Fecha de corte fija
@@ -223,26 +244,31 @@ def test_demo_profile_counts(
 
 
 def test_scale_profiles_are_declared() -> None:
-    assert cli.SCALE_SHIPMENTS == {"demo": DEMO_SHIPMENTS, "local": LOCAL_SHIPMENTS}
+    assert cli.SCALE_SHIPMENTS == {
+        "demo": DEMO_SHIPMENTS,
+        "local": LOCAL_SHIPMENTS,
+        "benchmark": BENCHMARK_SHIPMENTS,
+    }
 
 
 def test_local_profile_requests_its_volume(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """El CLI pide 200 000 envíos con ``local`` sin generarlos en la prueba.
 
     La prueba solo comprueba el volumen pedido y no necesita las 200 000 filas;
-    aquí se intercepta la llamada, se registra el volumen pedido y se generan
-    300 filas para el resto del flujo.
+    aquí se intercepta el flujo de envíos, se registra el volumen pedido y se
+    generan 300 filas para el resto del flujo. La escritura recorre los envíos
+    dos veces, así que el volumen se pide dos veces.
     """
     requested: list[int] = []
-    real_generate = cli.generate_shipments
+    real_iter = dataset.iter_shipments
 
-    def fake_generate(count: int, seed: int, months: int) -> tuple[dict[str, str], ...]:
+    def fake_iter(count: int, seed: int, months: int) -> Iterator[dict[str, str]]:
         requested.append(count)
-        return real_generate(300, seed, months)
+        return real_iter(300, seed, months)
 
-    monkeypatch.setattr(cli, "generate_shipments", fake_generate)
+    monkeypatch.setattr(dataset, "iter_shipments", fake_iter)
     assert run_generator(tmp_path / "local", "--scale", "local") == 0
-    assert requested == [LOCAL_SHIPMENTS]
+    assert requested == [LOCAL_SHIPMENTS, LOCAL_SHIPMENTS]
     written = json.loads((tmp_path / "local" / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
     assert written["scale"] == "local"
 
@@ -271,16 +297,23 @@ def test_dimension_files_are_not_empty(demo_dir: Path) -> None:
 
 
 def test_manifest_entries_follow_schema(manifest: dict[str, Any]) -> None:
-    keys = [(entry["type"], entry["column"]) for entry in manifest["defects"]]
+    keys = [(entry["type"], entry["column"]) for entry in manifest["defects"]][:5]
     assert keys == [
         (DUPLICATE_TYPE, "shipment_id"),
         *((CRITICAL_NULL_TYPE, column) for column in CRITICAL_NULL_COLUMNS),
         (DELIVERED_BEFORE_PICKUP_TYPE, "delivered_at"),
     ]
+    assert len(shipment_entries(manifest)) == 5
+    assert len(manifest["defects"]) == 13
     for entry in manifest["defects"]:
-        assert list(entry) == ["type", "column", "count", "rate", "rule_id", "expected_action"]
+        assert list(entry) == ENTRY_KEYS
         assert entry["count"] > 0
         assert entry["rate"] > 0
+
+
+def test_manifest_tables_cover_the_tms(manifest: dict[str, Any]) -> None:
+    assert list(manifest["tables"]) == list(dataset.TMS_TABLE_ORDER)
+    assert manifest["tables"]["shipments"] == manifest["shipments"]
 
 
 def test_manifest_rate_matches_count_over_shipments(manifest: dict[str, Any]) -> None:
@@ -290,7 +323,7 @@ def test_manifest_rate_matches_count_over_shipments(manifest: dict[str, Any]) ->
     propio redondeo (media unidad del quinto decimal).
     """
     shipments = manifest["shipments"]
-    for entry in manifest["defects"]:
+    for entry in shipment_entries(manifest):
         exact = entry["count"] / shipments
         assert entry["rate"] == round(exact, RATE_DECIMALS), entry
         assert abs(entry["rate"] - exact) <= ROUNDING_TOLERANCE, entry
@@ -304,12 +337,12 @@ def test_manifest_rate_matches_configured_rate(manifest: dict[str, Any]) -> None
     0,0033333). La cota está en ``configured_rate_tolerance``.
     """
     tolerance = configured_rate_tolerance(manifest["shipments"])
-    for entry in manifest["defects"]:
+    for entry in shipment_entries(manifest):
         assert entry["rate"] == pytest.approx(CONFIGURED_RATE[entry["type"]], abs=tolerance), entry
 
 
 def test_manifest_null_thirds_add_up_to_configured_rate(manifest: dict[str, Any]) -> None:
-    null_entries = [e for e in manifest["defects"] if e["type"] == CRITICAL_NULL_TYPE]
+    null_entries = [e for e in shipment_entries(manifest) if e["type"] == CRITICAL_NULL_TYPE]
     total = sum(entry["count"] for entry in null_entries)
     assert total == defect_count(manifest["shipments"], CRITICAL_NULL_RATE)
     counts = [entry["count"] for entry in null_entries]
@@ -321,7 +354,9 @@ def test_manifest_counts_match_generated_rows(
     shipment_rows: list[dict[str, str]],
     base_rows: list[dict[str, str]],
 ) -> None:
-    counts = {(entry["type"], entry["column"]): entry["count"] for entry in manifest["defects"]}
+    counts = {
+        (entry["type"], entry["column"]): entry["count"] for entry in shipment_entries(manifest)
+    }
 
     assert counts[(DUPLICATE_TYPE, "shipment_id")] == len(shipment_rows) - len(base_rows)
     for column in CRITICAL_NULL_COLUMNS:

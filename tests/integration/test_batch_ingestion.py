@@ -1,12 +1,15 @@
 """Pruebas de integración de la ingesta batch contra PostgreSQL.
 
 Publican en ``it_<hex>_tms`` un generado pequeño (500 envíos base con defectos,
-entre ellos copias de un mismo ``shipment_id``), extraen a ``it_<hex>_raw`` por
-watermark y cargan los archivos ERP con su registro en ``it_<hex>_meta``.
+entre ellos copias de un mismo ``shipment_id``, con su flota, viajes, tramos,
+paradas, eventos, combustible, tenders e incidencias), extraen a
+``it_<hex>_raw`` por watermark las 14 tablas TMS y cargan los archivos ERP con
+su registro en ``it_<hex>_meta``.
 
 El avance diario se simula con dos fechas de corte: ``D-1 = 2026-11-07`` y
 ``D = 2026-11-08``. Las filas que se publican con ``D`` incluyen envíos tardíos
-(``pickup_date`` anterior a ``D-1``) y copias de un mismo ``shipment_id``. Las
+(``pickup_date`` anterior a ``D-1``), sus hijos y copias de un mismo
+``shipment_id``. Las
 pruebas comprueban relaciones entre ``tms`` y ``raw``, no cifras fijas.
 """
 
@@ -21,7 +24,7 @@ import psycopg
 from psycopg import sql
 
 from nexora.generators.tms_publisher import publish_directory
-from nexora.ingestion.batch.loaders import SHIPMENTS, run_files, run_tms
+from nexora.ingestion.batch.loaders import SHIPMENTS, TMS_TABLES, RawTable, run_files, run_tms
 
 if TYPE_CHECKING:
     from conftest import Schemas
@@ -30,6 +33,7 @@ D_MINUS_1 = date(2026, 11, 7)
 D = date(2026, 11, 8)
 
 CUSTOMERS_FILE = "customers.csv"
+TMS_NAMES = tuple(t.name for t in TMS_TABLES)
 
 
 def scalar(conn: psycopg.Connection, query: sql.Composable, params: tuple = ()) -> object:
@@ -49,11 +53,23 @@ def watermarks(conn: psycopg.Connection, s: Schemas) -> list[tuple]:
     return conn.execute(query).fetchall()
 
 
-def shipments_watermark(conn: psycopg.Connection, s: Schemas) -> object:
+def table_watermark(conn: psycopg.Connection, s: Schemas, name: str) -> object:
+    """Watermark de ``<tms>.<name>``; ``None`` si la tabla aún no se ha extraído."""
     query = sql.SQL("select watermark_ts from {} where source_table = %s").format(
         table(s.meta, "batch_watermarks")
     )
-    return scalar(conn, query, (f"{s.tms}.shipments",))
+    row = conn.execute(query, (f"{s.tms}.{name}",)).fetchone()
+    return None if row is None else row[0]
+
+
+def shipments_watermark(conn: psycopg.Connection, s: Schemas) -> object:
+    return table_watermark(conn, s, "shipments")
+
+
+def count_of(conn: psycopg.Connection, schema: str, name: str) -> int:
+    value = scalar(conn, sql.SQL("select count(*) from {}").format(table(schema, name)))
+    assert isinstance(value, int)
+    return value
 
 
 def inserted(results: list, name: str) -> int:
@@ -117,16 +133,14 @@ def test_reextraction_inserts_no_rows(pg: psycopg.Connection, schemas: Schemas, 
     first = extract(pg, schemas, "run-first")
     assert inserted(first, SHIPMENTS.name) > 0
     before = watermarks(pg, schemas)
-    assert len(before) == 4
+    assert len(before) == len(TMS_TABLES)
 
     second = extract(pg, schemas, "run-second")
 
-    assert [result.rows for result in second] == [0, 0, 0, 0]
+    assert [result.rows for result in second] == [0] * len(TMS_TABLES)
     assert watermarks(pg, schemas) == before
-    for name in ("shipments", "carriers", "routes", "service_types"):
-        assert scalar(
-            pg, sql.SQL("select count(*) from {}").format(table(schemas.raw, name))
-        ) == scalar(pg, sql.SQL("select count(*) from {}").format(table(schemas.tms, name)))
+    for name in TMS_NAMES:
+        assert count_of(pg, schemas.raw, name) == count_of(pg, schemas.tms, name)
 
 
 def test_late_rows_are_extracted_in_window(
@@ -189,6 +203,130 @@ def test_shipment_id_in_a_single_run_id(pg: psycopg.Connection, schemas: Schemas
         ).format(shipments),
     )
     assert split == 0
+
+
+# Cada consulta cuenta las filas hijas sin su padre en ``tms``.
+COHERENCE_CHECKS: dict[str, str] = {
+    "events_orphan": "select count(*) from {tms}.shipment_events c where not exists "
+    "(select 1 from {tms}.shipments s where s.shipment_id = c.shipment_id)",
+    "stops_orphan": "select count(*) from {tms}.shipment_stops c where not exists "
+    "(select 1 from {tms}.shipments s where s.shipment_id = c.shipment_id)",
+    "tenders_orphan": "select count(*) from {tms}.carrier_tenders c where not exists "
+    "(select 1 from {tms}.shipments s where s.shipment_id = c.shipment_id)",
+    "incidents_orphan": "select count(*) from {tms}.carrier_incidents c where not exists "
+    "(select 1 from {tms}.shipments s where s.shipment_id = c.shipment_id)",
+    "shipment_legs_orphan": "select count(*) from {tms}.shipment_legs c where not exists "
+    "(select 1 from {tms}.shipments s where s.shipment_id = c.shipment_id)",
+    "shipment_legs_without_leg": "select count(*) from {tms}.shipment_legs c where not exists "
+    "(select 1 from {tms}.trip_legs t where t.trip_id = c.trip_id "
+    "and t.leg_sequence = c.leg_sequence)",
+    "trip_legs_without_trip": "select count(*) from {tms}.trip_legs c where not exists "
+    "(select 1 from {tms}.trips t where t.trip_id = c.trip_id)",
+    "fuel_without_trip": "select count(*) from {tms}.fuel_transactions c where not exists "
+    "(select 1 from {tms}.trips t where t.trip_id = c.trip_id)",
+    "trips_without_fleet": "select count(*) from {tms}.trips c where not exists "
+    "(select 1 from {tms}.vehicles v where v.vehicle_id = c.vehicle_id) or not exists "
+    "(select 1 from {tms}.drivers d where d.driver_id = c.driver_id)",
+}
+
+
+def test_keys_are_coherent_after_d_minus_1(
+    pg: psycopg.Connection, schemas: Schemas, source_dir: Path
+):
+    """Coherencia de claves tras ``D-1``: ningún hijo publicado sin su padre."""
+    publish(pg, schemas, source_dir, D_MINUS_1)
+    for name in TMS_NAMES:
+        assert count_of(pg, schemas.tms, name) > 0, name
+
+    tms = sql.Identifier(schemas.tms)
+    orphans = {
+        check: scalar(pg, sql.SQL(query).format(tms=tms))
+        for check, query in COHERENCE_CHECKS.items()
+    }
+
+    assert orphans == dict.fromkeys(COHERENCE_CHECKS, 0)
+
+
+def window_difference(
+    conn: psycopg.Connection, s: Schemas, raw_table: RawTable, run_id: str, previous: object
+) -> int:
+    """Filas que difieren entre la ventana de ``tms`` y lo insertado por ``run_id``."""
+    columns = sql.SQL(", ").join(sql.Identifier(name) for name in raw_table.column_names)
+    condition = sql.SQL("true") if previous is None else sql.SQL("updated_at > %s")
+    params: tuple = () if previous is None else (previous,)
+    query = sql.SQL(
+        "select count(*) from ("
+        "(select {c} from {raw} where run_id = %s "
+        "except all select {c} from {tms} where {cond}) "
+        "union all "
+        "(select {c} from {tms} where {cond} "
+        "except all select {c} from {raw} where run_id = %s)) d"
+    ).format(
+        c=columns,
+        raw=table(s.raw, raw_table.name),
+        tms=table(s.tms, raw_table.name),
+        cond=condition,
+    )
+    value = scalar(conn, query, (run_id, *params, *params, run_id))
+    assert isinstance(value, int)
+    return value
+
+
+def test_window_of_d_is_new_rows_in_every_table(
+    pg: psycopg.Connection, schemas: Schemas, source_dir: Path
+):
+    """Ventana de ``D`` = filas nuevas en cada tabla: con ``updated_at`` posterior al watermark."""
+    advance_to_d(pg, schemas, source_dir)
+    previous = {name: table_watermark(pg, schemas, name) for name in TMS_NAMES}
+    expected = {}
+    for name in TMS_NAMES:
+        condition = sql.SQL("true") if previous[name] is None else sql.SQL("updated_at > %s")
+        params: tuple = () if previous[name] is None else (previous[name],)
+        expected[name] = scalar(
+            pg,
+            sql.SQL("select count(*) from {} where {}").format(table(schemas.tms, name), condition),
+            params,
+        )
+
+    results = extract(pg, schemas, "run-d")
+
+    assert {name: inserted(results, name) for name in TMS_NAMES} == expected
+    for name in ("shipments", "trips", "shipment_events", "carrier_tenders"):
+        assert expected[name] > 0, name
+    for raw_table in TMS_TABLES:
+        assert window_difference(pg, schemas, raw_table, "run-d", previous[raw_table.name]) == 0
+
+
+def test_event_before_d_minus_1_in_window_of_d(
+    pg: psycopg.Connection, schemas: Schemas, source_dir: Path
+):
+    """Evento anterior a ``D-1`` en la ventana de ``D``: llega tarde con su envío."""
+    advance_to_d(pg, schemas, source_dir)
+    extract(pg, schemas, "run-d")
+
+    late_events = scalar(
+        pg,
+        sql.SQL("select count(*) from {} where run_id = %s and event_ts < %s").format(
+            table(schemas.raw, "shipment_events")
+        ),
+        ("run-d", D_MINUS_1),
+    )
+    assert isinstance(late_events, int)
+    assert late_events >= 1
+
+
+def test_watermark_is_max_updated_at_per_table(
+    pg: psycopg.Connection, schemas: Schemas, source_dir: Path
+):
+    """``watermark_ts = max(updated_at)`` de cada tabla de origen tras extraer ``D``."""
+    advance_to_d(pg, schemas, source_dir)
+    extract(pg, schemas, "run-d")
+
+    marks = {row[0]: row[1] for row in watermarks(pg, schemas)}
+    assert sorted(marks) == sorted(f"{schemas.tms}.{name}" for name in TMS_NAMES)
+    for name in TMS_NAMES:
+        top = scalar(pg, sql.SQL("select max(updated_at) from {}").format(table(schemas.tms, name)))
+        assert marks[f"{schemas.tms}.{name}"] == top, name
 
 
 def load_files(conn: psycopg.Connection, s: Schemas, directory: Path, run_id: str) -> list:

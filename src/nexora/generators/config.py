@@ -228,3 +228,136 @@ SERVICE_TYPE_CATALOG: tuple[ServiceType, ...] = (
     ServiceType("SVC-FTL", "full_truckload", 96),
     ServiceType("SVC-LTL", "less_than_truckload", 72),
 )
+
+
+# Fleet catalog parameters. Vehicles and drivers belong only to the owned
+# carriers and are split evenly among them, in contiguous blocks of ids.
+VEHICLES_PER_OWNED_CARRIER: int = 30
+DRIVERS_PER_OWNED_CARRIER: int = 40
+
+
+@dataclass(frozen=True)
+class VehicleType:
+    """A vehicle class of the owned fleet, with its nominal capacity and yield."""
+
+    vehicle_type: str
+    capacity_kg: float
+    capacity_m3: float
+    fuel_type: str
+    km_per_gallon: float
+
+
+VEHICLE_TYPE_CATALOG: tuple[VehicleType, ...] = (
+    VehicleType("tractor_trailer", 34000.0, 90.00, "diesel", 7.80),
+    VehicleType("rigid_truck", 17000.0, 48.00, "diesel", 10.50),
+    VehicleType("rigid_truck", 17000.0, 48.00, "diesel", 10.50),
+    VehicleType("medium_truck", 8500.0, 32.00, "diesel", 14.20),
+    VehicleType("light_truck", 3500.0, 18.00, "natural_gas", 21.00),
+)
+# Each vehicle deviates from the nominal yield of its class by a position-based
+# step, so the fleet is not perfectly uniform.
+VEHICLE_YIELD_STEPS: tuple[float, ...] = (-0.40, -0.20, 0.00, 0.20, 0.40)
+
+# Purchase and hire dates are spread by position over fixed windows that end
+# before CUTOFF_DATE, so the catalogs never depend on the system clock.
+FLEET_PURCHASE_START: date = date(2016, 1, 1)
+FLEET_PURCHASE_SPAN_DAYS: int = 3287
+DRIVER_HIRE_START: date = date(2014, 1, 1)
+DRIVER_HIRE_SPAN_DAYS: int = 4383
+FLEET_DATE_STRIDE_DAYS: int = 97
+
+# Plate, document, phone and email formats of the fleet catalogs. They are
+# deliberately unofficial: the plate and document prefixes are not issued by
+# any authority, the phone prefix is not assigned and the email domain is
+# reserved for documentation.
+VEHICLE_PLATE_PREFIX: str = "NXV"
+DRIVER_DOCUMENT_PREFIX: str = "NXD"
+DRIVER_PHONE_PREFIX: str = "+57 000"
+DRIVER_EMAIL_DOMAIN: str = "example.com"
+DRIVER_LICENSE_TYPES: tuple[str, ...] = ("C2", "C3", "C2", "C1")
+
+# Driver name pools, combined by position. Surnames are invented compounds, so
+# no combination matches a real person on purpose.
+DRIVER_GIVEN_NAMES: tuple[str, ...] = (
+    "Andrés",
+    "Lucía",
+    "Mateo",
+    "Valentina",
+    "Julián",
+    "Camila",
+    "Tomás",
+    "Isabela",
+    "Esteban",
+    "Mariana",
+    "Felipe",
+    "Daniela",
+    "Samuel",
+    "Paula",
+    "Martín",
+    "Sofía",
+    "Emilio",
+    "Laura",
+    "Gabriel",
+    "Natalia",
+)
+DRIVER_FAMILY_NAMES: tuple[str, ...] = (
+    "Montealto",
+    "Pradoverde",
+    "Rocaclara",
+    "Sierralta",
+    "Lagomar",
+    "Campoluz",
+    "Peñarroble",
+    "Vientosur",
+    "Brisamar",
+    "Arenalta",
+    "Fuentelar",
+    "Valleluz",
+    "Cumbrera",
+    "Olivaral",
+    "Piedrasol",
+    "Riomenor",
+    "Cañaverde",
+    "Lomaclara",
+    "Nevadal",
+    "Bosquerial",
+)
+
+
+# Child rows per base shipment, as averages over the population. Stops are a
+# pickup, a delivery and up to two transit hubs; every shipment gets an accepted
+# tender and half of them a previous offer to another carrier.
+EVENTS_PER_SHIPMENT: int = 10
+STOPS_PER_SHIPMENT: int = 3
+TENDERS_PER_SHIPMENT: float = 1.5
+INCIDENTS_PER_SHIPMENT: float = 0.1
+
+# Trips, legs and fuel purchases exist only for the owned fleet. After a loaded
+# trip, this share of trips adds an empty repositioning trip without shipments.
+REPOSITIONING_TRIP_RATE: float = 0.03
+
+# Kilometres covered between two fuel purchases of a trip.
+FUEL_STOP_KM: float = 600.0
+
+# Currency of every amount of the operation.
+CURRENCY_CODE: str = "COP"
+
+# Defect injection rates of the operational tables, over the base rows of each
+# table. Every affected row carries a single defect; the critical nulls of a
+# table alternate between its two columns.
+EVENT_DUPLICATE_RATE: float = 0.02  # DQ-001: byte-identical copy of an event.
+EVENT_CRITICAL_NULL_RATE: float = 0.01
+EVENT_IMPOSSIBLE_DATE_RATE: float = 0.005
+FUEL_CRITICAL_NULL_RATE: float = 0.01
+TENDER_NO_RESPONSE_RATE: float = 0.02  # DQ-014: tender without an answer.
+INCIDENT_UNCLOSED_RATE: float = 0.01
+
+EVENT_CRITICAL_NULL_COLUMNS: tuple[str, ...] = ("event_type", "location_city")
+FUEL_CRITICAL_NULL_COLUMNS: tuple[str, ...] = ("gallons", "total_amount")
+
+# An impossible event date lands this many days after the real one.
+IMPOSSIBLE_DATE_SHIFT_DAYS: int = 36_525
+
+# Only incidents reported this many days before the end of the cutoff date are
+# old enough to be expected closed, so only they can lose their resolution.
+UNCLOSED_MIN_AGE_DAYS: int = 30
