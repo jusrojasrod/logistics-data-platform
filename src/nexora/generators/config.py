@@ -361,3 +361,115 @@ IMPOSSIBLE_DATE_SHIFT_DAYS: int = 36_525
 # Only incidents reported this many days before the end of the cutoff date are
 # old enough to be expected closed, so only they can lose their resolution.
 UNCLOSED_MIN_AGE_DAYS: int = 30
+
+
+# Late files of the ERP and CRM extracts. A row is late when the first 8 hex
+# digits of the SHA-256 of its natural key, read as an integer, modulo 100 fall
+# below LATE_FILE_PCT. Late rows are written only to
+# LATE_DIRECTORY/<entity>LATE_FILE_SUFFIX.csv and never to the main file.
+LATE_FILE_PCT: int = 3
+LATE_DIRECTORY: str = "late"
+LATE_FILE_SUFFIX: str = "_late"
+
+
+# Customer tariffs. Each customer is priced on the first route and service
+# combinations of its shipments, with two versions per combination: the first
+# one valid from the start of the window and the second one, with an increase,
+# valid from a day drawn inside the window.
+TARIFF_COMBOS_PER_CUSTOMER: int = 6
+TARIFF_VERSIONS: int = 2
+TARIFF_ID_PREFIX: str = "TRF"
+TARIFF_BASE_AMOUNT_RANGE: tuple[int, int] = (180_000, 450_000)
+TARIFF_PER_KM_AMOUNT_RANGE: tuple[int, int] = (2_800, 5_200)
+TARIFF_FUEL_SURCHARGE_PCT_RANGE: tuple[float, float] = (6.0, 14.0)
+TARIFF_INCREASE_PCT_RANGE: tuple[float, float] = (3.0, 8.0)
+
+# List price used when a customer has no tariff for a route and service.
+LIST_BASE_AMOUNT: float = 320_000.0
+LIST_PER_KM_AMOUNT: float = 4_600.0
+LIST_FUEL_SURCHARGE_PCT: float = 12.0
+
+
+# Invoicing. Only delivered shipments are invoiced, a few days after delivery;
+# invoices dated after CUTOFF_DATE are not issued yet. A share of the lines is
+# billed with a small variation against the tariff amount.
+INVOICE_ID_PREFIX: str = "INV"
+INVOICE_LINE_ID_PREFIX: str = "INVL"
+INVOICE_LINE_CONCEPTS: tuple[str, ...] = ("freight", "fuel_surcharge")
+INVOICE_DELAY_DAYS: tuple[int, int] = (0, 3)
+BILLING_VARIANCE_RATE: float = 0.10
+BILLING_VARIANCE_PCT_RANGE: tuple[float, float] = (1.0, 8.0)
+# Synthetic value-added tax applied to every invoice line.
+TAX_PCT: float = 19.0
+INVOICE_STATUS_ISSUED: str = "issued"
+INVOICE_STATUS_PAID: str = "paid"
+
+
+# Payments. Most invoices receive a single payment for their total, around the
+# due date and never before the invoice date; payments after CUTOFF_DATE do not
+# exist yet.
+PAYMENT_ID_PREFIX: str = "PAY"
+PAYMENT_RATE: float = 0.95
+PAYMENT_OFFSET_DAYS: tuple[int, int] = (-10, 20)
+PAYMENT_METHODS: tuple[str, ...] = ("bank_transfer", "bank_transfer", "check", "card")
+
+
+# Carrier settlements of the third-party carriers, one freight line per
+# delivered shipment. Late deliveries carry a deduction over the payable amount.
+SETTLEMENT_ID_PREFIX: str = "STL"
+SETTLEMENT_LINE_ID_PREFIX: str = "STLL"
+SETTLEMENT_CONCEPT: str = "freight"
+SETTLEMENT_STATUS: str = "settled"
+SETTLEMENT_DELAY_DAYS: tuple[int, int] = (7, 20)
+SETTLEMENT_PER_KM_AMOUNT: float = 3_400.0
+SETTLEMENT_FUEL_SURCHARGE_PCT: float = 9.0
+SETTLEMENT_LATE_DEDUCTION_PCT: float = 5.0
+
+
+# Fleet costs of the owned carriers, one row per component and shipment, dated
+# on the pickup date. Tolls depend on the road type of the route.
+SHIPMENT_COST_ID_PREFIX: str = "SHC"
+COST_COMPONENTS: tuple[str, ...] = ("fuel", "driver", "tolls")
+COST_PER_KM_AMOUNT: dict[str, float] = {"fuel": 1_350.0, "driver": 620.0}
+TOLL_PER_KM_AMOUNT: dict[str, float] = {
+    "primary": 410.0,
+    "secondary": 260.0,
+    "tertiary": 90.0,
+}
+COST_CENTER_PREFIX: str = "CC"
+
+
+# CRM contacts. Names combine the driver name pools by position; documents,
+# phones and emails use the same unofficial formats as the fleet catalogs, with
+# a document range that does not overlap the drivers.
+CONTACTS_PER_CUSTOMER: int = 3
+CONTACT_ID_PREFIX: str = "CNT"
+CONTACT_ROLES: tuple[str, ...] = ("logistics_manager", "procurement", "accounts_payable")
+CONTACT_DOCUMENT_PREFIX: str = "NXD"
+CONTACT_DOCUMENT_START: int = 5_000_001
+CONTACT_PHONE_PREFIX: str = "+57 000"
+CONTACT_EMAIL_DOMAIN: str = "example.com"
+
+
+# CRM contracts, one active contract per customer that starts on or before the
+# start of the window and has no end date.
+CONTRACTS_PER_CUSTOMER: int = 1
+CONTRACT_ID_PREFIX: str = "CTR"
+CONTRACT_START_LEAD_DAYS: tuple[int, int] = (0, 720)
+CONTRACT_OTIF_TARGET_PCT: tuple[float, ...] = (92.0, 95.0, 97.0)
+CONTRACT_STATUS: str = "active"
+
+
+# CRM leads over the existing customers, created inside the window. Lost leads
+# have no expected close date.
+LEAD_COUNT: int = 500
+LEAD_ID_PREFIX: str = "LEA"
+LEAD_SOURCES: tuple[str, ...] = ("referral", "website", "trade_show", "outbound", "partner")
+LEAD_STAGES: tuple[str, ...] = ("prospect", "qualified", "proposal", "negotiation", "won", "lost")
+LEAD_LOST_STAGE: str = "lost"
+LEAD_VALUE_AMOUNT_RANGE: tuple[int, int] = (5_000_000, 250_000_000)
+LEAD_CLOSE_DAYS: tuple[int, int] = (15, 120)
+
+# Contract start dates are spread by position over CONTRACT_START_LEAD_DAYS
+# before the start of the window, with this stride between customers.
+CONTRACT_START_STRIDE_DAYS: int = 97

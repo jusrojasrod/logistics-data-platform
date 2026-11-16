@@ -1,16 +1,26 @@
 """Streaming writer of the whole synthetic dataset.
 
 ``write_dataset`` produces every CSV of the source systems plus the defect
-manifest without keeping lists of rows in memory. It walks the base shipments
-twice with the same seed, so both walks see the same rows:
+manifest without keeping lists of rows in memory. The catalogs, the fleet and
+the CRM contacts, contracts and leads are written first. Then it walks the base
+shipments twice with the same seed, so both walks see the same rows:
 
 1. the first walk keeps only compact state: one byte per shipment telling
-   whether it was delivered, which draws the shipment defects, and the trip
-   keys of the owned fleet, which consolidate the trips;
-2. trips, legs and fuel purchases are written from the trip plan;
+   whether it was delivered, which draws the shipment defects, the trip keys of
+   the owned fleet, which consolidate the trips, and the first route and
+   service combinations of each customer, which the tariffs price;
+2. the tariffs are written from those combinations, and trips, legs and fuel
+   purchases from the trip plan;
 3. the second walk writes ``shipments.csv`` with the shipment defects, the
    copies right after their original, and derives the stops, events, tenders,
-   incidents and shipment legs from the clean base row.
+   incidents and shipment legs from the clean base row, followed by its
+   invoice, invoice lines, payment, carrier settlement or fleet costs.
+
+Every ERP and CRM row goes either to ``<entity>.csv`` or to
+``late/<entity>_late.csv``, the file of the rows that reach the landing zone
+after the rest; the hash of its natural key decides which one. The new tables
+draw from random generators of their own, so the operational files do not
+depend on them.
 
 The defects of the operational tables are drawn row by row, in writing order,
 from a random generator of their own. Each affected row carries a single
@@ -41,8 +51,17 @@ from nexora.generators.config import (
     FUEL_CRITICAL_NULL_RATE,
     IMPOSSIBLE_DATE_SHIFT_DAYS,
     INCIDENT_UNCLOSED_RATE,
+    LATE_DIRECTORY,
     TENDER_NO_RESPONSE_RATE,
     UNCLOSED_MIN_AGE_DAYS,
+)
+from nexora.generators.crm import (
+    CONTACTS_ENTITY,
+    CONTRACTS_ENTITY,
+    LEADS_ENTITY,
+    build_contacts,
+    build_contracts,
+    build_leads,
 )
 from nexora.generators.defects import (
     ALERT_ACTION,
@@ -55,6 +74,7 @@ from nexora.generators.defects import (
     QUARANTINE_ACTION,
     UNCLOSED_TYPE,
     DefectEntry,
+    LateFileEntry,
     apply_shipment_defects,
     build_manifest,
     defect_rate,
@@ -63,9 +83,29 @@ from nexora.generators.defects import (
 )
 from nexora.generators.dimensions import (
     CARRIERS_ENTITY,
+    CUSTOMERS_ENTITY,
     ROUTES_ENTITY,
     SERVICE_TYPES_ENTITY,
+    DimensionTable,
     build_dimensions,
+)
+from nexora.generators.erp import (
+    CARRIER_SETTLEMENTS_COLUMNS,
+    CARRIER_SETTLEMENTS_ENTITY,
+    INVOICE_LINES_COLUMNS,
+    INVOICE_LINES_ENTITY,
+    INVOICES_COLUMNS,
+    INVOICES_ENTITY,
+    PAYMENTS_COLUMNS,
+    PAYMENTS_ENTITY,
+    SHIPMENT_COSTS_COLUMNS,
+    SHIPMENT_COSTS_ENTITY,
+    TARIFFS_ENTITY,
+    ErpContext,
+    ErpIds,
+    TariffCombos,
+    build_tariffs,
+    shipment_finance,
 )
 from nexora.generators.fleet import (
     DRIVERS_ENTITY,
@@ -73,6 +113,7 @@ from nexora.generators.fleet import (
     build_drivers,
     build_vehicles,
 )
+from nexora.generators.late_files import is_late, late_file_name, late_key
 from nexora.generators.operations import (
     CARRIER_INCIDENTS_COLUMNS,
     CARRIER_INCIDENTS_ENTITY,
@@ -121,6 +162,20 @@ TMS_TABLE_ORDER: tuple[str, ...] = (
     CARRIER_INCIDENTS_ENTITY,
 )
 
+# Natural key of every ERP and CRM table split into a main and a late file, in
+# manifest order.
+LATE_FILE_KEYS: dict[str, tuple[str, ...]] = {
+    TARIFFS_ENTITY: ("tariff_id", "valid_from"),
+    CONTACTS_ENTITY: ("contact_id",),
+    CONTRACTS_ENTITY: ("contract_id",),
+    LEADS_ENTITY: ("lead_id",),
+    INVOICES_ENTITY: ("invoice_id",),
+    INVOICE_LINES_ENTITY: ("invoice_line_id",),
+    PAYMENTS_ENTITY: ("payment_id",),
+    CARRIER_SETTLEMENTS_ENTITY: ("settlement_line_id",),
+    SHIPMENT_COSTS_ENTITY: ("shipment_cost_id",),
+}
+
 # Incidents reported before this instant are old enough to be expected closed.
 UNCLOSED_REPORTED_BEFORE: datetime = CUTOFF_END - timedelta(days=UNCLOSED_MIN_AGE_DAYS)
 
@@ -134,8 +189,9 @@ NO_RESPONSE_COLUMNS: tuple[str, ...] = ("responded_ts", "response_status", "acce
 class DatasetSummary:
     """What ``write_dataset`` wrote.
 
-    ``files`` holds the rows written per CSV file, injected copies included;
-    ``tables`` the base rows of every TMS table, without copies.
+    ``files`` holds the rows written per CSV file, injected copies included,
+    with the late files under ``late/``; ``tables`` the base rows of every TMS
+    table, without copies; ``late_files`` the split of every ERP and CRM table.
     """
 
     directory: Path
@@ -143,6 +199,7 @@ class DatasetSummary:
     files: Mapping[str, int]
     tables: Mapping[str, int]
     defects: tuple[DefectEntry, ...]
+    late_files: tuple[LateFileEntry, ...]
     manifest: Path
 
 
@@ -164,12 +221,59 @@ class _CsvSink:
             self.write(row)
 
 
-def _open_sink(stack: ExitStack, directory: Path, name: str, columns: tuple[str, ...]) -> _CsvSink:
-    path = directory / f"{name}.csv"
+def _open_path(stack: ExitStack, path: Path, columns: tuple[str, ...]) -> _CsvSink:
     handle = stack.enter_context(
         path.open("w", encoding="utf-8", newline="", buffering=WRITE_BUFFER_BYTES)
     )
     return _CsvSink(handle, columns)
+
+
+def _open_sink(stack: ExitStack, directory: Path, name: str, columns: tuple[str, ...]) -> _CsvSink:
+    return _open_path(stack, directory / f"{name}.csv", columns)
+
+
+class _SplitSink:
+    """The main and the late file of an ERP or CRM table, written row by row.
+
+    Both files get the same header, even when one of them ends up empty. Each
+    row goes to a single file: the late one when the hash of its natural key
+    falls in the late share.
+    """
+
+    def __init__(
+        self, stack: ExitStack, directory: Path, name: str, columns: tuple[str, ...]
+    ) -> None:
+        self.name = name
+        self.key = LATE_FILE_KEYS[name]
+        self._main = _open_sink(stack, directory, name, columns)
+        self._late = _open_path(stack, directory / late_file_name(name), columns)
+
+    def write(self, row: Mapping[str, str]) -> None:
+        if is_late(late_key(row, self.key)):
+            self._late.write(row)
+        else:
+            self._main.write(row)
+
+    def write_all(self, rows: Iterable[Mapping[str, str]]) -> None:
+        for row in rows:
+            self.write(row)
+
+    def entry(self) -> LateFileEntry:
+        """Return the manifest entry of the table."""
+        return LateFileEntry(
+            table=self.name,
+            file=late_file_name(self.name),
+            key=self.key,
+            rows=self._main.rows + self._late.rows,
+            late_rows=self._late.rows,
+        )
+
+
+def _write_split(directory: Path, table: DimensionTable) -> LateFileEntry:
+    with ExitStack() as stack:
+        sink = _SplitSink(stack, directory, table.name, table.columns)
+        sink.write_all(table.rows)
+    return sink.entry()
 
 
 def _rate(count: int, base_rows: int) -> float:
@@ -318,28 +422,49 @@ def write_dataset(
 ) -> DatasetSummary:
     """Write every CSV of the dataset and its manifest into ``out``.
 
-    Memory holds one byte per base shipment, the shipment defect plan and the
-    integer trip plan; it does not grow with the number of child rows.
+    Memory holds one byte per base shipment, the shipment defect plan, the
+    integer trip plan, the catalogs and the tariff versions; it does not grow
+    with the number of child rows.
     """
     directory = Path(out)
     directory.mkdir(parents=True, exist_ok=True)
+    (directory / LATE_DIRECTORY).mkdir(exist_ok=True)
     files: dict[str, int] = {}
     tables: dict[str, int] = {}
+    late_entries: dict[str, LateFileEntry] = {}
 
-    for table in (*build_dimensions(), build_vehicles(), build_drivers()):
+    catalogs = {table.name: table for table in build_dimensions()}
+    for table in (*catalogs.values(), build_vehicles(), build_drivers()):
         table.write_csv(directory)
         files[f"{table.name}.csv"] = len(table.rows)
         tables[table.name] = len(table.rows)
 
-    # First walk: delivered mask and trip keys.
+    customers = catalogs[CUSTOMERS_ENTITY]
+    for table in (
+        build_contacts(customers),
+        build_contracts(customers),
+        build_leads(customers, seed),
+    ):
+        late_entries[table.name] = _write_split(directory, table)
+
+    # First walk: delivered mask, trip keys and tariff combinations.
     delivered = bytearray()
     builder = TripPlanBuilder()
+    combos = TariffCombos()
     for row in iter_shipments(shipments, seed, months):
         delivered.append(1 if row["delivered_at"] else 0)
         builder.add(row)
+        combos.add(row)
     shipment_plan = plan_shipment_defects(delivered, seed)
     trip_plan = builder.build(seed)
     del delivered, builder
+
+    tariffs = build_tariffs(combos, seed, months)
+    late_entries[TARIFFS_ENTITY] = _write_split(directory, tariffs)
+    erp_context = ErpContext.from_tables(
+        customers, catalogs[CARRIERS_ENTITY], catalogs[ROUTES_ENTITY], tariffs
+    )
+    del combos, tariffs
 
     defects = EntityDefects(seed)
 
@@ -361,6 +486,8 @@ def write_dataset(
     # Second walk: shipments with their defects and the children of each clean row.
     rng = Random(f"entities-{seed}")
     ids = EntityIds()
+    erp_rng = Random(f"erp-{seed}")
+    erp_ids = ErpIds()
     with ExitStack() as stack:
         shipment_sink = _open_sink(stack, directory, SHIPMENTS_ENTITY, SHIPMENTS_COLUMNS)
         stops = _open_sink(stack, directory, SHIPMENT_STOPS_ENTITY, SHIPMENT_STOPS_COLUMNS)
@@ -370,6 +497,13 @@ def write_dataset(
             stack, directory, CARRIER_INCIDENTS_ENTITY, CARRIER_INCIDENTS_COLUMNS
         )
         shipment_legs = _open_sink(stack, directory, SHIPMENT_LEGS_ENTITY, SHIPMENT_LEGS_COLUMNS)
+        invoices = _SplitSink(stack, directory, INVOICES_ENTITY, INVOICES_COLUMNS)
+        invoice_lines = _SplitSink(stack, directory, INVOICE_LINES_ENTITY, INVOICE_LINES_COLUMNS)
+        payments = _SplitSink(stack, directory, PAYMENTS_ENTITY, PAYMENTS_COLUMNS)
+        settlements = _SplitSink(
+            stack, directory, CARRIER_SETTLEMENTS_ENTITY, CARRIER_SETTLEMENTS_COLUMNS
+        )
+        costs = _SplitSink(stack, directory, SHIPMENT_COSTS_ENTITY, SHIPMENT_COSTS_COLUMNS)
         for index, row in enumerate(iter_shipments(shipments, seed, months)):
             shipment_sink.write_all(apply_shipment_defects(index, row, shipment_plan))
             entities = shipment_entities(row, trip_plan, rng, ids)
@@ -381,6 +515,14 @@ def write_dataset(
             for incident in entities.incidents:
                 incidents.write(defects.incident(incident))
             shipment_legs.write_all(entities.legs)
+            finance = shipment_finance(row, erp_context, erp_rng, erp_ids)
+            invoices.write_all(finance.invoices)
+            invoice_lines.write_all(finance.invoice_lines)
+            payments.write_all(finance.payments)
+            settlements.write_all(finance.settlements)
+            costs.write_all(finance.costs)
+    for sink in (invoices, invoice_lines, payments, settlements, costs):
+        late_entries[sink.name] = sink.entry()
     child_files = {
         SHIPMENTS_ENTITY: shipment_sink.rows,
         SHIPMENT_STOPS_ENTITY: stops.rows,
@@ -405,16 +547,24 @@ def write_dataset(
     )
     ordered_tables = {name: tables[name] for name in TMS_TABLE_ORDER}
 
+    late_files = tuple(late_entries[name] for name in LATE_FILE_KEYS)
+    for entry in late_files:
+        files[f"{entry.table}.csv"] = entry.rows - entry.late_rows
+        files[entry.file] = entry.late_rows
+
     entries = (*shipment_plan.defects, *defects.entries())
     manifest = write_manifest(
         directory,
-        build_manifest(scale, seed, months, shipment_plan.shipments, ordered_tables, entries),
+        build_manifest(
+            scale, seed, months, shipment_plan.shipments, ordered_tables, entries, late_files
+        ),
     )
     return DatasetSummary(
         directory=directory,
         shipments=shipment_plan.shipments,
-        files=dict(sorted(files.items())),
+        files=dict(sorted(files.items(), key=lambda item: ("/" in item[0], item[0]))),
         tables=ordered_tables,
         defects=entries,
+        late_files=late_files,
         manifest=manifest,
     )

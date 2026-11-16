@@ -16,8 +16,13 @@ Two ways in, both selected with ``--source``:
   without new rows inserts nothing and leaves the watermark as it was. A
   missing ``tms`` table raises ``LookupError``; the tables extracted before it
   in the same run keep their progress.
-* ``files``: load of the ERP files (``customers*.csv``) into ``raw.customers``.
-  A file is identified by the SHA-256 of its bytes and registered in
+* ``files``: load of the ERP and CRM files of one directory. Each table of
+  ``FILE_TABLES`` reads its ``<table>*.csv`` files into ``raw.<table>``: the
+  ERP ``customers``, ``tariffs``, ``invoices``, ``invoice_lines``,
+  ``payments``, ``carrier_settlements`` and ``shipment_costs``, and the CRM
+  ``contacts``, ``contracts`` and ``leads``. Late files live in the
+  ``LATE_DIRECTORY`` subdirectory and are loaded by a second run over it. A
+  file is identified by the SHA-256 of its bytes and registered in
   ``meta.ingested_files``, one row per ``(target_table, source_file_hash)``. A
   file whose hash is already registered is skipped, so a renamed copy is not
   loaded twice, while a modified file has a new hash and is loaded.
@@ -66,24 +71,42 @@ META_SCHEMA: str = watermark.META_SCHEMA
 INGESTED_FILES_TABLE: str = "ingested_files"
 
 ERP_SOURCE_SYSTEM: str = "erp"
+CRM_SOURCE_SYSTEM: str = "crm"
 TMS_SOURCE_SYSTEM: str = "tms"
+
+# Subdirectory of a dataset with the late ERP and CRM files.
+LATE_DIRECTORY: str = "late"
 
 HASH_FETCH_ROWS: int = 10_000
 
 __all__ = [
     "CARRIERS",
     "CARRIER_INCIDENTS",
+    "CARRIER_SETTLEMENTS",
     "CARRIER_TENDERS",
+    "CONTACTS",
+    "CONTRACTS",
+    "CRM_SOURCE_SYSTEM",
     "CUSTOMERS",
     "DRIVERS",
+    "ERP_SOURCE_SYSTEM",
+    "FILE_TABLES",
     "FUEL_TRANSACTIONS",
     "HASH_FETCH_ROWS",
+    "INVOICES",
+    "INVOICE_LINES",
+    "LATE_DIRECTORY",
+    "LEADS",
+    "PAYMENTS",
+    "RAW_TABLES",
     "ROUTES",
     "SERVICE_TYPES",
     "SHIPMENTS",
+    "SHIPMENT_COSTS",
     "SHIPMENT_EVENTS",
     "SHIPMENT_LEGS",
     "SHIPMENT_STOPS",
+    "TARIFFS",
     "TMS_TABLES",
     "TRIPS",
     "TRIP_LEGS",
@@ -397,6 +420,146 @@ CARRIER_INCIDENTS = RawTable(
     ),
 )
 
+TARIFFS = RawTable(
+    name="tariffs",
+    source_system=ERP_SOURCE_SYSTEM,
+    columns=(
+        Column("tariff_id", "text"),
+        Column("customer_id", "text"),
+        Column("route_id", "text"),
+        Column("service_type_id", "text"),
+        Column("valid_from", "date"),
+        Column("valid_to", "date", nullable=True),
+        Column("base_amount", "numeric(14,2)"),
+        Column("per_km_amount", "numeric(14,2)"),
+        Column("fuel_surcharge_pct", "numeric(5,2)"),
+        Column("currency_code", "text"),
+    ),
+)
+
+CONTACTS = RawTable(
+    name="contacts",
+    source_system=CRM_SOURCE_SYSTEM,
+    columns=(
+        Column("contact_id", "text"),
+        Column("customer_id", "text"),
+        Column("customer_contact_name", "text"),
+        Column("contact_role", "text"),
+        Column("contact_document", "text"),
+        Column("customer_phone", "text"),
+        Column("customer_email", "text"),
+        Column("city", "text"),
+    ),
+)
+
+CONTRACTS = RawTable(
+    name="contracts",
+    source_system=CRM_SOURCE_SYSTEM,
+    columns=(
+        Column("contract_id", "text"),
+        Column("customer_id", "text"),
+        Column("service_type_id", "text"),
+        Column("start_date", "date"),
+        Column("end_date", "date", nullable=True),
+        Column("payment_term_days", "integer"),
+        Column("otif_target_pct", "numeric(5,2)"),
+        Column("contract_status", "text"),
+    ),
+)
+
+LEADS = RawTable(
+    name="leads",
+    source_system=CRM_SOURCE_SYSTEM,
+    columns=(
+        Column("lead_id", "text"),
+        Column("customer_id", "text"),
+        Column("created_date", "date"),
+        Column("lead_source", "text"),
+        Column("stage", "text"),
+        Column("estimated_value_amount", "numeric(14,2)"),
+        Column("currency_code", "text"),
+        Column("expected_close_date", "date", nullable=True),
+    ),
+)
+
+INVOICES = RawTable(
+    name="invoices",
+    source_system=ERP_SOURCE_SYSTEM,
+    columns=(
+        Column("invoice_id", "text"),
+        Column("customer_id", "text"),
+        Column("shipment_id", "text"),
+        Column("invoice_date", "date"),
+        Column("due_date", "date"),
+        Column("invoice_status", "text"),
+        Column("total_amount", "numeric(14,2)"),
+        Column("currency_code", "text"),
+    ),
+)
+
+INVOICE_LINES = RawTable(
+    name="invoice_lines",
+    source_system=ERP_SOURCE_SYSTEM,
+    columns=(
+        Column("invoice_line_id", "text"),
+        Column("invoice_id", "text"),
+        Column("shipment_id", "text"),
+        Column("line_number", "integer"),
+        Column("concept", "text"),
+        Column("tariff_amount", "numeric(14,2)"),
+        Column("billed_revenue_amount", "numeric(14,2)"),
+        Column("tax_amount", "numeric(14,2)"),
+        Column("currency_code", "text"),
+    ),
+)
+
+PAYMENTS = RawTable(
+    name="payments",
+    source_system=ERP_SOURCE_SYSTEM,
+    columns=(
+        Column("payment_id", "text"),
+        Column("invoice_id", "text"),
+        Column("customer_id", "text"),
+        Column("paid_date", "date"),
+        Column("payment_amount", "numeric(14,2)"),
+        Column("payment_method", "text"),
+        Column("currency_code", "text"),
+    ),
+)
+
+CARRIER_SETTLEMENTS = RawTable(
+    name="carrier_settlements",
+    source_system=ERP_SOURCE_SYSTEM,
+    columns=(
+        Column("settlement_line_id", "text"),
+        Column("settlement_id", "text"),
+        Column("shipment_id", "text"),
+        Column("carrier_id", "text"),
+        Column("concept", "text"),
+        Column("settled_date", "date"),
+        Column("payable_amount", "numeric(14,2)"),
+        Column("deduction_amount", "numeric(14,2)"),
+        Column("fuel_surcharge_amount", "numeric(14,2)"),
+        Column("settlement_status", "text"),
+        Column("currency_code", "text"),
+    ),
+)
+
+SHIPMENT_COSTS = RawTable(
+    name="shipment_costs",
+    source_system=ERP_SOURCE_SYSTEM,
+    columns=(
+        Column("shipment_cost_id", "text"),
+        Column("shipment_id", "text"),
+        Column("carrier_id", "text"),
+        Column("cost_component", "text"),
+        Column("cost_date", "date"),
+        Column("cost_amount", "numeric(14,2)"),
+        Column("cost_center", "text"),
+        Column("currency_code", "text"),
+    ),
+)
+
 # Every raw table of the contract.
 RAW_TABLES: tuple[RawTable, ...] = (
     CUSTOMERS,
@@ -414,6 +577,15 @@ RAW_TABLES: tuple[RawTable, ...] = (
     FUEL_TRANSACTIONS,
     CARRIER_TENDERS,
     CARRIER_INCIDENTS,
+    TARIFFS,
+    CONTACTS,
+    CONTRACTS,
+    LEADS,
+    INVOICES,
+    INVOICE_LINES,
+    PAYMENTS,
+    CARRIER_SETTLEMENTS,
+    SHIPMENT_COSTS,
 )
 
 # Extraction order from tms: dimensions, shipments and fleet catalogs first, then
@@ -435,8 +607,20 @@ TMS_TABLES: tuple[RawTable, ...] = (
     CARRIER_INCIDENTS,
 )
 
-# Tables loaded from ERP files.
-FILE_TABLES: tuple[RawTable, ...] = (CUSTOMERS,)
+# Tables loaded from ERP and CRM files, in load order: catalogs and CRM first,
+# then invoicing, payments, carrier settlements and fleet costs.
+FILE_TABLES: tuple[RawTable, ...] = (
+    CUSTOMERS,
+    TARIFFS,
+    CONTACTS,
+    CONTRACTS,
+    LEADS,
+    INVOICES,
+    INVOICE_LINES,
+    PAYMENTS,
+    CARRIER_SETTLEMENTS,
+    SHIPMENT_COSTS,
+)
 
 
 @dataclass(frozen=True)
@@ -452,7 +636,7 @@ class ExtractResult:
 
 @dataclass(frozen=True)
 class FileResult:
-    """Outcome of loading one ERP file into its ``raw`` table."""
+    """Outcome of loading one ERP or CRM file into its ``raw`` table."""
 
     table: str
     source_file: str
@@ -694,7 +878,7 @@ def load_file(
     raw_schema: str = RAW_SCHEMA,
     meta_schema: str = META_SCHEMA,
 ) -> FileResult:
-    """Load one ERP file into its ``raw`` table and register it, in one transaction.
+    """Load one ERP or CRM file into its ``raw`` table and register it, in one transaction.
 
     The file is skipped if its hash is already registered for the table in
     ``meta.ingested_files``. Otherwise it is copied into a typed temporary
@@ -772,7 +956,12 @@ def run_files(
     meta_schema: str = META_SCHEMA,
     tables: Sequence[RawTable] = FILE_TABLES,
 ) -> list[FileResult]:
-    """Load the ``<table>*.csv`` files of ``directory``, in name order, one transaction each."""
+    """Load the ``<table>*.csv`` files of ``directory``, one transaction each.
+
+    Tables run in ``tables`` order and the files of each table in name order.
+    Only the first level of ``directory`` is read: the late files of
+    ``LATE_DIRECTORY`` are loaded by another call over that subdirectory.
+    """
     run = run_id if run_id is not None else uuid.uuid4().hex
     ingested_at = datetime.now(UTC)
     results = []
@@ -788,20 +977,24 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m nexora.ingestion.batch.loaders",
         description=(
             "Carga el esquema raw: extrae las tablas de tms por watermark (--source tms) "
-            "o carga los archivos ERP de una carpeta por hash (--source files)."
+            "o carga los archivos ERP y CRM de una carpeta por hash (--source files)."
         ),
     )
     parser.add_argument(
         "--source",
         choices=("tms", "files"),
         required=True,
-        help="origen: tms (tablas del esquema tms) o files (customers*.csv de --input)",
+        help="origen: tms (tablas del esquema tms) o files (archivos ERP y CRM de --input)",
     )
     parser.add_argument(
         "--input",
         type=Path,
         default=None,
-        help="carpeta con los archivos ERP (customers*.csv). Obligatoria con --source files",
+        help=(
+            "carpeta con los archivos ERP y CRM (<tabla>*.csv, solo el primer nivel; "
+            f"los tardíos se cargan pasando su subcarpeta {LATE_DIRECTORY}/). "
+            "Obligatoria con --source files"
+        ),
     )
     parser.add_argument(
         "--dsn",
@@ -888,7 +1081,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 meta_schema=args.meta_schema,
             )
             if not files:
-                print(f"sin archivos ERP en {args.input}")
+                print(f"sin archivos ERP ni CRM en {args.input}")
             for loaded in files:
                 _print_file(loaded)
     return 0

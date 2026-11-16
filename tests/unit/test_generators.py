@@ -52,7 +52,7 @@ DEMO_SHIPMENTS = 50_000
 LOCAL_SHIPMENTS = 200_000
 BENCHMARK_SHIPMENTS = 2_000_000
 
-EXPECTED_FILES = {
+OPERATIONAL_FILES = {
     "shipments.csv",
     "customers.csv",
     "carriers.csv",
@@ -71,7 +71,35 @@ EXPECTED_FILES = {
     MANIFEST_FILE_NAME,
 }
 
-MANIFEST_KEYS = ["scale", "seed", "months", "cutoff_date", "shipments", "tables", "defects"]
+# Tablas ERP y CRM: cada una con su archivo principal y su tardío en ``late/``.
+ERP_CRM_TABLES = (
+    "tariffs",
+    "contacts",
+    "contracts",
+    "leads",
+    "invoices",
+    "invoice_lines",
+    "payments",
+    "carrier_settlements",
+    "shipment_costs",
+)
+
+EXPECTED_FILES = {
+    *OPERATIONAL_FILES,
+    *(f"{name}.csv" for name in ERP_CRM_TABLES),
+    *(f"late/{name}_late.csv" for name in ERP_CRM_TABLES),
+}
+
+MANIFEST_KEYS = [
+    "scale",
+    "seed",
+    "months",
+    "cutoff_date",
+    "shipments",
+    "tables",
+    "defects",
+    "late_files",
+]
 ENTRY_KEYS = ["table", "type", "column", "count", "rate", "rule_id", "expected_action"]
 
 # Columnas que el contrato declara siempre informadas en el CSV de origen.
@@ -130,9 +158,11 @@ def read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
 
 
 def file_digests(directory: Path) -> dict[str, str]:
+    """Huella de cada archivo de la carpeta, subcarpeta ``late/`` incluida."""
     return {
-        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(directory.iterdir())
+        path.relative_to(directory).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(directory.rglob("*"))
+        if path.is_file()
     }
 
 
@@ -199,6 +229,26 @@ def test_different_seed_changes_shipments(demo_dir: Path, tmp_path: Path) -> Non
 
 def test_manifest_has_no_variable_metadata(manifest: dict[str, Any]) -> None:
     assert list(manifest) == MANIFEST_KEYS
+
+
+def test_manifest_lists_late_files_without_keys(manifest: dict[str, Any]) -> None:
+    """Por tabla: archivo, columnas de la clave y filas; las claves están en el tardío."""
+    assert [entry["table"] for entry in manifest["late_files"]] == list(ERP_CRM_TABLES)
+    for entry in manifest["late_files"]:
+        assert list(entry) == ["table", "file", "key", "rows", "late_rows"]
+        assert entry["file"] == f"late/{entry['table']}_late.csv"
+        assert 0 <= entry["late_rows"] <= entry["rows"]
+
+
+def test_demo_tariffs_cover_six_combinations_per_customer(demo_dir: Path) -> None:
+    rows = read_csv(demo_dir / "tariffs.csv")[1] + read_csv(demo_dir / "late/tariffs_late.csv")[1]
+    combos: dict[str, set[tuple[str, str]]] = {}
+    for row in rows:
+        combos.setdefault(row["customer_id"], set()).add((row["route_id"], row["service_type_id"]))
+    customers = {row["customer_id"] for row in build_customers().rows}
+    assert set(combos) == customers
+    assert {len(value) for value in combos.values()} == {6}
+    assert len(rows) == 12 * len(customers)
 
 
 # Fecha de corte fija

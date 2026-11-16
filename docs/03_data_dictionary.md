@@ -3,7 +3,7 @@
 Describe los archivos que produce el generador sintético, el esquema `tms` que simula el sistema de gestión de transporte, las tablas del esquema `raw` donde aterrizan los datos y las tablas de control de la ingesta en `meta`. A `raw` se llega por dos vías:
 
 - **TMS:** los CSV de las entidades TMS (envíos, dimensiones, flota, viajes, tramos, paradas, eventos, combustible, ofertas a transportadores e incidencias) se publican en `tms.<tabla>`, y el conector batch los extrae de ahí a `raw.<tabla>` por watermark de `updated_at`.
-- **ERP:** `customers.csv` llega como archivo a `raw.customers` y se identifica por el SHA-256 de su contenido.
+- **Archivos ERP y CRM:** `customers.csv` y los nueve CSV del ERP (`tariffs`, `invoices`, `invoice_lines`, `payments`, `carrier_settlements` y `shipment_costs`) y del CRM (`contacts`, `contracts` y `leads`) llegan como archivos a `raw.<tabla>` y se identifican por el SHA-256 de su contenido. Cerca del 3 % de las filas de esas nueve entidades llega aparte, en un archivo tardío de la subcarpeta `late/` que se carga después (§1 y §2.2).
 
 Los tipos y la nulabilidad de `tms` y `raw` son los del DDL explícito de los contratos: no se infieren de los CSV.
 
@@ -15,9 +15,11 @@ El generador escribe un CSV por entidad y un manifiesto de defectos en `data/<pe
 make data SCALE=demo        # o SCALE=local, o SCALE=benchmark
 ```
 
-Los CSV de las entidades TMS no se cargan como archivos en `raw`: se publican en el esquema `tms` (§1.1). Solo `customers.csv`, del ERP, llega como archivo a `raw`.
+Los CSV de las entidades TMS no se cargan como archivos en `raw`: se publican en el esquema `tms` (§1.1). Los CSV del ERP (`customers.csv` y seis entidades financieras) y del CRM (tres entidades comerciales) llegan como archivos a `raw` (§2.2).
 
-El perfil `benchmark` (2 000 000 envíos base) solo se genera a archivos, para medir la generación: el publicador rechaza su carpeta (§1.1) y nunca llega a `tms` ni a `raw`. El generador escribe en flujo, fila a fila, sin acumular filas en memoria: lo que retiene crece con el número de envíos base y de viajes, no con el de eventos.
+Las nueve entidades ERP y CRM nuevas se reparten en dos archivos con la misma cabecera: `<entidad>.csv`, en la carpeta del perfil, y `late/<entidad>_late.csv`, en su subcarpeta `late/`, con las filas que llegan a la zona de aterrizaje después del resto. Con `x` el entero de los primeros 8 dígitos hexadecimales del SHA-256 de la clave natural de la fila, la fila va al archivo tardío si `x % 100 < 3`, y si no, al principal. La clave es la de la tabla (§2.19 a §2.27); en `tariffs`, que tiene clave compuesta, sus dos columnas unidas por `|` (`tariff_id|valid_from`). La regla depende solo de la clave: cada fila vive en un solo archivo, los dos archivos se escriben aunque uno quede vacío y la proporción tardía es la que resulta del hash, cerca del 3 % y más lejos en las tablas pequeñas. `customers.csv` no tiene archivo tardío. Por eso los ids de un archivo principal tienen huecos: las filas que faltan están en el tardío.
+
+El perfil `benchmark` (2 000 000 envíos base) solo se genera a archivos, para medir la generación: el publicador rechaza su carpeta (§1.1) y nunca llega a `tms` ni a `raw`. El generador escribe en flujo, fila a fila, sin acumular filas en memoria: lo que retiene crece con el número de envíos base y de viajes, no con el de eventos; de las entidades ERP y CRM solo retiene tablas que no crecen con los envíos: los catálogos, las del CRM y las versiones de tarifa.
 
 | Archivo | Entidad | Grano | Filas | Destino | `source_system` |
 |---|---|---|---|---|---|
@@ -36,9 +38,19 @@ El perfil `benchmark` (2 000 000 envíos base) solo se genera a archivos, para m
 | `fuel_transactions.csv` | Compras de combustible | Una fila por compra (`fuel_txn_id`) | 67 232 en `demo` | `tms.fuel_transactions` | `tms` |
 | `carrier_tenders.csv` | Ofertas a transportadores | Una fila por oferta (`tender_id`) | 74 953 en `demo` (media de 1,5 por envío) | `tms.carrier_tenders` | `tms` |
 | `carrier_incidents.csv` | Incidencias del transportador | Una fila por incidencia (`incident_id`) | 5 036 en `demo` (media de 0,1 por envío) | `tms.carrier_incidents` | `tms` |
+| `tariffs.csv` | Tarifas por cliente | Una fila por versión de tarifa (`tariff_id`, `valid_from`) | 1 800 (12 por cliente) | `raw.tariffs` | `erp` |
+| `contacts.csv` | Contactos de clientes | Una fila por contacto (`contact_id`) | 450 (3 por cliente) | `raw.contacts` | `crm` |
+| `contracts.csv` | Contratos de clientes | Una fila por contrato (`contract_id`) | 150 (1 por cliente) | `raw.contracts` | `crm` |
+| `leads.csv` | Oportunidades comerciales | Una fila por oportunidad (`lead_id`) | 500 | `raw.leads` | `crm` |
+| `invoices.csv` | Facturas | Una fila por cabecera de factura (`invoice_id`) | 46 152 en `demo` (una por envío entregado y facturado) | `raw.invoices` | `erp` |
+| `invoice_lines.csv` | Líneas de factura | Una fila por línea (`invoice_line_id`) | 92 304 en `demo` (2 por factura) | `raw.invoice_lines` | `erp` |
+| `payments.csv` | Pagos de clientes | Una fila por pago (`payment_id`) | 40 013 en `demo` (a lo sumo 1 por factura) | `raw.payments` | `erp` |
+| `carrier_settlements.csv` | Liquidaciones a transportadores | Una fila por línea de liquidación (`settlement_line_id`): envío × carrier × concepto | 22 577 en `demo` | `raw.carrier_settlements` | `erp` |
+| `shipment_costs.csv` | Costos de la flota propia | Una fila por envío y componente de costo (`shipment_cost_id`) | 75 198 en `demo` (3 por envío de la flota propia) | `raw.shipment_costs` | `erp` |
+| `late/<entidad>_late.csv` | Filas tardías de las nueve entidades anteriores | Las de su entidad | Cerca del 3 % de su entidad (§3, campo `late_files`) | `raw.<entidad>` | El de su entidad |
 | `defect_manifest.json` | Defectos inyectados | Una entrada por tabla, tipo de defecto y columna | 13 entradas | — | — |
 
-Los conteos de `demo` son los del manifiesto (§3, campo `tables`) con la semilla por defecto; en `local` y `benchmark` las entidades por envío crecen en la misma proporción que los envíos base, y vehículos y conductores no cambian.
+Los conteos de `demo` son los del manifiesto (§3, campos `tables` y `late_files`) con la semilla por defecto; en las nueve entidades ERP y CRM suman el archivo principal y el tardío. En `local` y `benchmark` las entidades por envío crecen en la misma proporción que los envíos base, y vehículos, conductores, contactos, contratos y oportunidades no cambian; las tarifas dependen de las combinaciones de ruta y servicio de cada cliente y llegan a lo sumo a 12 por cliente.
 
 Convenciones comunes de los CSV:
 
@@ -48,6 +60,7 @@ Convenciones comunes de los CSV:
 - Booleanos como `true` o `false`.
 - La historia cubre 24 meses completos que terminan en la fecha de corte fija `2026-11-09`. Con el mismo perfil y la misma semilla, los archivos son idénticos byte a byte.
 - Los ids de las dimensiones y de la flota dependen solo de la posición en el catálogo. Todo id no nulo de `shipments.csv` existe en el catálogo de la misma corrida: no se generan huérfanos.
+- Las entidades ERP y CRM tampoco generan huérfanos, contando el archivo principal y el tardío juntos: todo `customer_id`, `route_id`, `service_type_id` y `carrier_id` existe en su catálogo, todo `shipment_id` en `shipments.csv` y todo `invoice_id` de líneas y pagos en las facturas. Van limpias: no tienen defectos inyectados ni duplicados.
 - Las entidades que cuelgan de un envío (paradas, eventos, ofertas, incidencias y `shipment_legs`) se derivan de su fila base limpia, antes de inyectar los defectos de envíos, y solo referencian `shipment_id` que existen en `shipments.csv`. Todo `trip_id` de tramos, `shipment_legs` y combustible existe en `trips.csv`, y todo tramo de `shipment_legs` existe en `trip_legs.csv`.
 - Montos en pesos colombianos: columnas `_amount` con `currency_code = 'COP'`.
 
@@ -60,6 +73,14 @@ Reglas de las entidades operativas:
 5. **Fecha de corte:** ninguna marca observada de una fila limpia pasa del final de la fecha de corte (`2026-11-09T23:59:59+00:00`). Si una marca obligatoria (`start_ts`, `departure_ts`, `event_ts`, `txn_ts`, `offered_ts`, `reported_ts` o el `responded_ts` de una incidencia) caería después, la fila no se genera: un tramo omitido se lleva sus `shipment_legs` y su combustible, y una incidencia omitida, su evento `damage`; distancia, km vacíos, minutos detenido y galones del viaje suman solo sus tramos generados. Si caería después una marca nulable (`end_ts`, `arrival_ts`, `actual_ts`, `resolved_ts`), queda nula: la operación sigue en curso. `planned_ts` de las paradas es un plan, como `promised_delivery_ts`, y puede pasar de la fecha de corte. Las únicas filas con una marca observada posterior son los eventos con `impossible_date` (§3).
 6. Simplificaciones: no se controla que un vehículo haga dos viajes a la vez ni su capacidad, y los horarios del viaje no se concilian con `delivered_at` del envío.
 
+Reglas de las entidades ERP y CRM. Se derivan de la fila base limpia de cada envío, antes de inyectar sus defectos, y de los catálogos; las fechas son fechas UTC y ninguna fecha observada (emisión, pago, liquidación, costo, creación o inicio de vigencia) pasa de la fecha de corte; `due_date` y `expected_close_date` son planes y pueden pasarla:
+
+1. **Tarifas:** cada cliente tiene tarifa para las 6 primeras combinaciones distintas de ruta y tipo de servicio de sus envíos base, en orden de generación, con dos versiones por combinación (§2.19).
+2. **Facturación:** cada envío entregado tiene una factura con dos líneas, `freight` y `fuel_surcharge`, fechada de 0 a 3 días después de `delivered_at`; si esa fecha pasa de la fecha de corte, la factura aún no existe. Los envíos no entregados no se facturan. No hay notas crédito (§2.23 y §2.24).
+3. **Pagos:** cada factura recibe, con probabilidad 0,95, un pago por su total; si no lo recibe, o si la fecha del pago pasaría de la fecha de corte, no tiene pago y queda `issued` (§2.25).
+4. **Liquidaciones y costos de flota:** un envío de un carrier tercero (`third_party`) entregado tiene una línea de liquidación al transportador, y un envío de la flota propia (`owned`), entregado o no, tiene tres filas de costo. Un envío nunca tiene las dos cosas, así que su costo no se cuenta dos veces (§2.26 y §2.27).
+5. **CRM:** cada cliente tiene 3 contactos y 1 contrato activo; las 500 oportunidades se reparten entre los clientes existentes (§2.20 a §2.22). Los datos de contacto son ficticios: nombres de los mismos catálogos de nombres inventados de los conductores, documentos con el prefijo `NXD-`, teléfonos `+57 000` y correos `@example.com`.
+
 ### 1.1 Esquema `tms`
 
 `tms` simula la base operativa del TMS. El publicador inserta en ella los CSV TMS de una carpeta, conectado como `tms_writer` (`NEXORA_TMS_DSN` y `TMS_WRITER_PASSWORD`, del entorno o de `.env`):
@@ -70,7 +91,7 @@ python -m nexora.generators.tms_publisher --input data/demo --until 2026-11-03  
 bash scripts/seed_db.sh demo                                                     # genera data/demo y publica todo
 ```
 
-`scripts/seed_db.sh` genera el perfil y publica sin fecha de corte; no carga `raw`. `--schema` cambia el esquema de destino (por defecto `tms`) y `--dsn` la conexión.
+`scripts/seed_db.sh` genera el perfil, publica sin fecha de corte y después carga en `raw` los archivos ERP y CRM de la carpeta y, a continuación, los de `late/` (§2.2), conectado como `etl_writer`; no toca las tablas TMS de `raw`, que llegan por extracción. `--schema` cambia el esquema de destino del publicador (por defecto `tms`) y `--dsn` la conexión.
 
 | Tabla | Origen | Columnas | Unicidad e índices |
 |---|---|---|---|
@@ -128,9 +149,9 @@ Permisos: `tms_writer` crea las tablas de `tms` y es el único que escribe en el
 Las tablas `raw` son append-only: los conectores batch solo insertan, nunca borran ni reescriben filas. Las carga el conector `python -m nexora.ingestion.batch.loaders`, conectado como `etl_writer` (`NEXORA_PG_DSN` y `ETL_WRITER_PASSWORD`, del entorno o de `.env`), por una de dos vías:
 
 - `--source tms`: extrae las catorce tablas de `tms`, en el orden de publicación de §1.1, hacia la tabla `raw` del mismo nombre, con las filas cuyo `updated_at` es posterior al watermark de la tabla (§2.2). `--tms-schema`, `--raw-schema` y `--meta-schema` cambian los esquemas de origen, destino y control (por defecto `tms`, `raw` y `meta`).
-- `--source files --input <carpeta>`: carga en `raw.customers` los archivos `customers*.csv` de la carpeta, en orden de nombre, omitiendo los que ya están registrados por su hash (§2.2).
+- `--source files --input <carpeta>`: carga los archivos ERP y CRM de la carpeta en la tabla `raw` de su entidad. Recorre las diez tablas de archivo en este orden (`customers`, `tariffs`, `contacts`, `contracts`, `leads`, `invoices`, `invoice_lines`, `payments`, `carrier_settlements` y `shipment_costs`) y, de cada una, los archivos `<tabla>*.csv` del primer nivel de la carpeta, en orden de nombre, omitiendo los que ya están registrados por su hash (§2.2). No entra en subcarpetas: los tardíos se cargan con una segunda ejecución sobre `<carpeta>/late`. El patrón no mezcla tablas: `invoices*.csv` no recoge `invoice_lines.csv`, ni `shipment_costs*.csv` recoge `shipments.csv`.
 
-En Airflow, `dag_ingest_batch` ejecuta las dos vías con el calendario `0 2 * * *`, en las tareas `extract_tms` y `load_erp_files`; la carpeta de archivos es `NEXORA_DATA_DIR/NEXORA_SCALE`.
+En Airflow, `dag_ingest_batch` ejecuta las dos vías con el calendario `0 2 * * *`, en las tareas `extract_tms` y `load_erp_files`; `load_erp_files` carga la carpeta `NEXORA_DATA_DIR/NEXORA_SCALE` y después su subcarpeta `late/`, y falla si `late/` no existe (§2.2).
 
 | Tabla | Origen | Vía | `source_system` | Columnas |
 |---|---|---|---|---|
@@ -149,24 +170,33 @@ En Airflow, `dag_ingest_batch` ejecuta las dos vías con el calendario `0 2 * * 
 | `raw.fuel_transactions` | `tms.fuel_transactions` | Extracción por watermark | `tms` | 11 + 5 = 16 |
 | `raw.carrier_tenders` | `tms.carrier_tenders` | Extracción por watermark | `tms` | 9 + 5 = 14 |
 | `raw.carrier_incidents` | `tms.carrier_incidents` | Extracción por watermark | `tms` | 11 + 5 = 16 |
+| `raw.tariffs` | `tariffs.csv` y `late/tariffs_late.csv` | Archivo por hash | `erp` | 10 + 5 = 15 |
+| `raw.contacts` | `contacts.csv` y `late/contacts_late.csv` | Archivo por hash | `crm` | 8 + 5 = 13 |
+| `raw.contracts` | `contracts.csv` y `late/contracts_late.csv` | Archivo por hash | `crm` | 8 + 5 = 13 |
+| `raw.leads` | `leads.csv` y `late/leads_late.csv` | Archivo por hash | `crm` | 8 + 5 = 13 |
+| `raw.invoices` | `invoices.csv` y `late/invoices_late.csv` | Archivo por hash | `erp` | 8 + 5 = 13 |
+| `raw.invoice_lines` | `invoice_lines.csv` y `late/invoice_lines_late.csv` | Archivo por hash | `erp` | 9 + 5 = 14 |
+| `raw.payments` | `payments.csv` y `late/payments_late.csv` | Archivo por hash | `erp` | 7 + 5 = 12 |
+| `raw.carrier_settlements` | `carrier_settlements.csv` y `late/carrier_settlements_late.csv` | Archivo por hash | `erp` | 11 + 5 = 16 |
+| `raw.shipment_costs` | `shipment_costs.csv` y `late/shipment_costs_late.csv` | Archivo por hash | `erp` | 8 + 5 = 13 |
 
-Ninguna tabla `raw` tiene restricción `unique`: las copias que llegan de la fuente se conservan.
+Ninguna tabla `raw` tiene restricción `unique`: las copias que llegan de la fuente se conservan. Las tablas de archivo se crean en la primera carga, con el DDL del contrato. `raw.contacts` tiene datos personales ficticios: su clasificación está en [`05_governance_policy.md`](05_governance_policy.md) §4.
 
 ### 2.1 Metadatos de ejecución
 
 Los conectores añaden estas columnas a toda fila de todas las tablas `raw`, en este orden y detrás de las columnas de negocio.
 
-| Columna | Tipo | Nulabilidad | Extracción de `tms` | Archivo ERP |
+| Columna | Tipo | Nulabilidad | Extracción de `tms` | Archivo ERP o CRM |
 |---|---|---|---|---|
 | `run_id` | `text` | `NOT NULL` | Identificador de la ejecución del conector: por defecto, un UUID nuevo por ejecución (`--run-id` lo fija). Todas las tablas de una misma ejecución comparten el valor | Igual |
-| `source_system` | `text` | `NOT NULL` | `tms` | `erp` |
-| `source_file` | `text` | `NOT NULL` | Tabla de origen, `<esquema>.<tabla>` (`tms.shipments`) | Nombre del archivo cargado (`customers.csv`), nunca una ruta |
+| `source_system` | `text` | `NOT NULL` | `tms` | `erp`; `crm` en `contacts`, `contracts` y `leads` |
+| `source_file` | `text` | `NOT NULL` | Tabla de origen, `<esquema>.<tabla>` (`tms.shipments`) | Nombre del archivo cargado (`customers.csv`, `invoices_late.csv`), nunca una ruta: un tardío se registra sin `late/` |
 | `source_file_hash` | `text` | `NOT NULL` | SHA-256 en hexadecimal (64 caracteres) del lote extraído: las filas de negocio de la ventana como `row(...)::text`, unidas por salto de línea en orden de `tms_row_id` y calculado en UTC. Todas las filas de un lote comparten el valor | SHA-256 en hexadecimal (64 caracteres) del contenido del archivo |
 | `ingested_at` | `timestamptz` | `NOT NULL` | Instante de la ejecución; el mismo para todas las tablas de una ejecución | Igual |
 
 Cálculo del hash del lote: el conector lo calcula en el cliente, sin concatenar la ventana en el servidor. Un cursor de servidor lee la ventana por bloques de 10 000 filas (`select row(<columnas de negocio>)::text … order by tms_row_id`, dentro de la transacción de la extracción y ya en UTC) y el SHA-256 recibe cada fila en UTF-8, con un salto de línea entre filas. El resultado es el mismo que el de concatenar en el servidor las filas en ese orden con `string_agg(…, E'\n' order by tms_row_id)` y aplicar SHA-256: los lotes ya cargados siguen siendo verificables con esa consulta. La memoria del cliente depende del tamaño del bloque, no del de la ventana. El número de filas del recorrido se compara con el de filas insertadas en `raw`.
 
-`run_id` e `ingested_at` cambian entre ejecuciones; no forman parte de los archivos de origen, de `tms` ni del manifiesto. En `dag_ingest_batch`, `extract_tms` y `load_erp_files` son ejecuciones distintas y cada una tiene su `run_id`.
+`run_id` e `ingested_at` cambian entre ejecuciones; no forman parte de los archivos de origen, de `tms` ni del manifiesto. En `dag_ingest_batch`, `extract_tms` y `load_erp_files` son ejecuciones distintas y cada una tiene su `run_id`; dentro de `load_erp_files`, la carga de la carpeta y la de `late/` también son ejecuciones distintas, igual que en `scripts/seed_db.sh`.
 
 ### 2.2 Idempotencia
 
@@ -184,10 +214,16 @@ Si `tms.<tabla>` no existe, la extracción de esa tabla falla con `LookupError` 
 
 Cada tabla avanza en su propia transacción y con su propio watermark, como la publicación. Si se publica entre la extracción de dos tablas de una misma ejecución, una fila hija (por ejemplo, un evento) puede llegar a `raw` una ejecución antes que su envío o su viaje. Las capas siguientes no deben suponer que padre e hijo comparten `run_id`.
 
-**Archivos ERP, por hash.** Cada archivo se carga en una sola transacción. La cabecera del CSV debe coincidir exactamente con el orden de columnas del contrato; si no, la carga falla. El conector calcula el SHA-256 del contenido, toma un bloqueo consultivo del registro de archivos de la tabla y busca el par `(tabla, hash)` en `meta.ingested_files` (§2.8):
+**Archivos ERP y CRM, por hash.** Cada archivo se carga en una sola transacción. La cabecera del CSV debe coincidir exactamente con el orden de columnas del contrato; si no, la carga falla. El conector calcula el SHA-256 del contenido, toma un bloqueo consultivo del registro de archivos de la tabla y busca el par `(tabla, hash)` en `meta.ingested_files` (§2.8):
 
 - Si está registrado, omite el archivo y no inserta filas. Una copia renombrada de un archivo ya cargado tiene el mismo hash y también se omite.
-- Si no, copia el archivo a una tabla temporal tipada con el contrato, lo inserta en `raw.customers` con los metadatos de §2.1 y lo registra en `meta.ingested_files`, en la misma transacción. Un archivo modificado tiene un hash nuevo y se carga.
+- Si no, copia el archivo a una tabla temporal tipada con el contrato, lo inserta en `raw.<tabla>` con los metadatos de §2.1 y lo registra en `meta.ingested_files`, en la misma transacción. Un archivo modificado tiene un hash nuevo y se carga.
+
+Si la carpeta de una ejecución no existe, la carga falla con `FileNotFoundError` (`no existe la carpeta <carpeta>`) antes de cargar nada; una carpeta sin archivos de ninguna tabla no carga nada.
+
+**Archivos tardíos.** El principal y el tardío de una entidad (`invoices.csv` y `late/invoices_late.csv`) son archivos distintos, con hashes distintos: `meta.ingested_files` registra los dos para la misma tabla, y `raw.<tabla>` acaba con las filas de ambos. `scripts/seed_db.sh` y `load_erp_files` cargan primero la carpeta y después `late/`, en dos ejecuciones con `run_id` distintos; repetir cualquiera de las dos omite sus archivos. Si falta `late/`, la segunda carga falla con `FileNotFoundError` tras haber cargado la carpeta principal: pasa con una carpeta generada por una versión del generador anterior a los tardíos, y se corrige generándola de nuevo (`scripts/seed_db.sh` o `make data`).
+
+Como cada fila vive en un solo archivo, la carga del tardío no repite filas de la principal. En cambio, entre las dos cargas, o si el tardío se retrasa, una fila hija puede estar en `raw` antes que su padre: por ejemplo, una línea de factura o un pago cuya factura está en `invoices_late.csv`. Cuando las dos cargas terminan, no quedan huérfanos entre las tablas ERP y CRM. Las capas siguientes no deben suponer que padre e hijo comparten `run_id` ni archivo.
 
 ### 2.3 `raw.shipments`
 
@@ -286,7 +322,7 @@ Los conectores crean estas tablas en su primera ejecución, como `etl_writer`, y
 | `run_id` | `text` | `NOT NULL` | Ejecución que fijó el watermark |
 | `set_at` | `timestamptz` | `NOT NULL` | `ingested_at` de esa ejecución |
 
-`meta.ingested_files`: una fila por archivo ERP cargado, identificado por su contenido.
+`meta.ingested_files`: una fila por archivo ERP o CRM cargado, identificado por su contenido. Tras cargar la carpeta y `late/`, cada una de las nueve tablas con tardíos tiene dos filas: la del principal y la del tardío.
 
 | Columna | Tipo | Nulabilidad | Descripción |
 |---|---|---|---|
@@ -471,9 +507,160 @@ Una incidencia del transportador en un envío. Fecha de negocio: `reported_ts`.
 | `resolved_ts` | `timestamptz` | `NULL` | Resolución, de 1 a 14 días después del reporte. Nula si caería después de la fecha de corte o por defecto inyectado (`unclosed`) |
 | `run_id`, `source_system`, `source_file`, `source_file_hash`, `ingested_at` | ver §2.1 | `NOT NULL` | Metadatos de ejecución; `source_system = 'tms'` |
 
+### 2.19 `raw.tariffs`
+
+Una versión de la tarifa de un cliente para una ruta y un tipo de servicio. Clave natural: `tariff_id`, `valid_from`. Cada cliente tiene tarifa para las 6 primeras combinaciones distintas de ruta y servicio de sus envíos base (menos si tiene menos), con dos versiones por combinación que comparten `tariff_id`. La versión vigente en un día `d` es la que cumple `valid_from <= d` y `d < valid_to`, o `valid_to` nulo.
+
+| Columna | Tipo | Nulabilidad | Descripción |
+|---|---|---|---|
+| `tariff_id` | `text` | `NOT NULL` | Identificador de la tarifa de una combinación (`TRF-00001`); se repite en sus dos versiones |
+| `customer_id` | `text` | `NOT NULL` | Cliente, de `raw.customers` |
+| `route_id` | `text` | `NOT NULL` | Ruta, de `raw.routes` |
+| `service_type_id` | `text` | `NOT NULL` | Tipo de servicio, de `raw.service_types` |
+| `valid_from` | `date` | `NOT NULL` | Inicio de la vigencia, incluido: el primer día de la ventana de historia en la primera versión y un día sorteado dentro de la ventana en la segunda |
+| `valid_to` | `date` | `NULL` | Fin de la vigencia, excluido: el `valid_from` de la versión siguiente. Nulo en la última versión, que sigue vigente |
+| `base_amount` | `numeric(14,2)` | `NOT NULL` | Cargo fijo por envío. La segunda versión sube de un 3 % a un 8 % sobre la primera |
+| `per_km_amount` | `numeric(14,2)` | `NOT NULL` | Cargo por km de la ruta, con la misma subida que `base_amount` |
+| `fuel_surcharge_pct` | `numeric(5,2)` | `NOT NULL` | Recargo de combustible sobre el flete, en porcentaje (de 6 a 14); igual en las dos versiones |
+| `currency_code` | `text` | `NOT NULL` | `COP` |
+| `run_id`, `source_system`, `source_file`, `source_file_hash`, `ingested_at` | ver §2.1 | `NOT NULL` | Metadatos de ejecución; `source_system = 'erp'` |
+
+Las vigencias de una combinación no se solapan ni dejan huecos desde el inicio de la ventana. Las dos versiones de una tarifa pueden quedar en archivos distintos, porque la clave del reparto tardío incluye `valid_from`.
+
+### 2.20 `raw.contacts`
+
+Un contacto de un cliente en el CRM. Clave natural: `contact_id`. Tres por cliente, uno por rol. Contiene datos personales ficticios: ver [`05_governance_policy.md`](05_governance_policy.md) §4.
+
+| Columna | Tipo | Nulabilidad | Descripción |
+|---|---|---|---|
+| `contact_id` | `text` | `NOT NULL` | Identificador del contacto (`CNT-00001`) |
+| `customer_id` | `text` | `NOT NULL` | Cliente, de `raw.customers` |
+| `customer_contact_name` | `text` | `NOT NULL` | Nombre y apellido ficticios, combinados por posición de los mismos catálogos de nombres inventados que los conductores. PII |
+| `contact_role` | `text` | `NOT NULL` | `logistics_manager`, `procurement` o `accounts_payable` |
+| `contact_document` | `text` | `NOT NULL` | Documento ficticio con el prefijo `NXD-` y 7 dígitos desde `NXD-5000001`, en un rango que no se solapa con el de los conductores. PII |
+| `customer_phone` | `text` | `NOT NULL` | Teléfono ficticio con el prefijo `+57 000` (`+57 000 500 0001`). PII |
+| `customer_email` | `text` | `NOT NULL` | Correo ficticio en el dominio reservado `example.com` (`cnt00001@example.com`). PII |
+| `city` | `text` | `NOT NULL` | Ciudad del cliente |
+| `run_id`, `source_system`, `source_file`, `source_file_hash`, `ingested_at` | ver §2.1 | `NOT NULL` | Metadatos de ejecución; `source_system = 'crm'` |
+
+### 2.21 `raw.contracts`
+
+El contrato de servicio de un cliente en el CRM. Clave natural: `contract_id`. Uno por cliente; los valores dependen solo de la posición del cliente en el catálogo.
+
+| Columna | Tipo | Nulabilidad | Descripción |
+|---|---|---|---|
+| `contract_id` | `text` | `NOT NULL` | Identificador del contrato (`CTR-0001`) |
+| `customer_id` | `text` | `NOT NULL` | Cliente, de `raw.customers` |
+| `service_type_id` | `text` | `NOT NULL` | Tipo de servicio contratado, de `raw.service_types`, rotando por posición del cliente entre los 6 del catálogo |
+| `start_date` | `date` | `NOT NULL` | Inicio del contrato: el primer día de la ventana de historia o hasta 720 días antes |
+| `end_date` | `date` | `NULL` | Fin del contrato. Nulo en todos: los contratos siguen vigentes |
+| `payment_term_days` | `integer` | `NOT NULL` | Plazo de pago, el del cliente en `raw.customers` |
+| `otif_target_pct` | `numeric(5,2)` | `NOT NULL` | Meta de OTIF del contrato, en porcentaje: `92.00`, `95.00` o `97.00` |
+| `contract_status` | `text` | `NOT NULL` | `active` |
+| `run_id`, `source_system`, `source_file`, `source_file_hash`, `ingested_at` | ver §2.1 | `NOT NULL` | Metadatos de ejecución; `source_system = 'crm'` |
+
+### 2.22 `raw.leads`
+
+Una oportunidad comercial del CRM sobre un cliente existente. Clave natural: `lead_id`. Fecha de negocio: `created_date`. Son 500 en todos los perfiles.
+
+| Columna | Tipo | Nulabilidad | Descripción |
+|---|---|---|---|
+| `lead_id` | `text` | `NOT NULL` | Identificador de la oportunidad (`LEA-0001`) |
+| `customer_id` | `text` | `NOT NULL` | Cliente, de `raw.customers`, sorteado entre los del catálogo |
+| `created_date` | `date` | `NOT NULL` | Creación, dentro de la ventana de historia |
+| `lead_source` | `text` | `NOT NULL` | `referral`, `website`, `trade_show`, `outbound` o `partner` |
+| `stage` | `text` | `NOT NULL` | `prospect`, `qualified`, `proposal`, `negotiation`, `won` o `lost` |
+| `estimated_value_amount` | `numeric(14,2)` | `NOT NULL` | Valor estimado, entre 5 000 000 y 250 000 000 |
+| `currency_code` | `text` | `NOT NULL` | `COP` |
+| `expected_close_date` | `date` | `NULL` | Cierre esperado, de 15 a 120 días después de `created_date`; es un plan y puede pasar de la fecha de corte. Nulo exactamente cuando `stage = 'lost'` |
+| `run_id`, `source_system`, `source_file`, `source_file_hash`, `ingested_at` | ver §2.1 | `NOT NULL` | Metadatos de ejecución; `source_system = 'crm'` |
+
+### 2.23 `raw.invoices`
+
+La cabecera de la factura de un envío entregado. Clave natural: `invoice_id`. Fecha de negocio: `invoice_date`. Un envío entregado tiene a lo sumo una factura; no la tiene si su `invoice_date` pasaría de la fecha de corte. No hay notas crédito: una factura emitida no se anula ni se corrige.
+
+| Columna | Tipo | Nulabilidad | Descripción |
+|---|---|---|---|
+| `invoice_id` | `text` | `NOT NULL` | Identificador de la factura (`INV-00000001`) |
+| `customer_id` | `text` | `NOT NULL` | Cliente del envío, de `raw.customers` |
+| `shipment_id` | `text` | `NOT NULL` | Envío facturado, de `raw.shipments` |
+| `invoice_date` | `date` | `NOT NULL` | Emisión: la fecha UTC de `delivered_at` más 0 a 3 días |
+| `due_date` | `date` | `NOT NULL` | Vencimiento: `invoice_date` más `payment_term_days` del cliente; puede pasar de la fecha de corte |
+| `invoice_status` | `text` | `NOT NULL` | `paid` si la factura tiene pago en `raw.payments`; `issued` si no |
+| `total_amount` | `numeric(14,2)` | `NOT NULL` | Suma de `billed_revenue_amount + tax_amount` de sus líneas |
+| `currency_code` | `text` | `NOT NULL` | `COP` |
+| `run_id`, `source_system`, `source_file`, `source_file_hash`, `ingested_at` | ver §2.1 | `NOT NULL` | Metadatos de ejecución; `source_system = 'erp'` |
+
+### 2.24 `raw.invoice_lines`
+
+Una línea de factura: el grano de la facturación. Clave natural: `invoice_line_id`. Cada factura tiene dos líneas: `freight` (`line_number = 1`) y `fuel_surcharge` (`line_number = 2`).
+
+| Columna | Tipo | Nulabilidad | Descripción |
+|---|---|---|---|
+| `invoice_line_id` | `text` | `NOT NULL` | Identificador de la línea (`INVL-000000001`) |
+| `invoice_id` | `text` | `NOT NULL` | Factura, de `raw.invoices` |
+| `shipment_id` | `text` | `NOT NULL` | Envío de la factura, de `raw.shipments` |
+| `line_number` | `integer` | `NOT NULL` | Posición de la línea en la factura: `1` o `2` |
+| `concept` | `text` | `NOT NULL` | `freight` o `fuel_surcharge` |
+| `tariff_amount` | `numeric(14,2)` | `NOT NULL` | Importe según tarifa. Flete: `base_amount + per_km_amount × distance_km` de la versión de `raw.tariffs` vigente en la `pickup_date` del envío, o del precio de lista (320 000 fijo, 4 600 por km y 12 % de recargo) si el cliente no tiene tarifa para esa ruta y servicio. Recargo: el flete por `fuel_surcharge_pct / 100` |
+| `billed_revenue_amount` | `numeric(14,2)` | `NOT NULL` | Importe facturado: igual a `tariff_amount`, salvo en cerca del 10 % de las líneas, que se desvían de un 1 % a un 8 % hacia arriba o hacia abajo |
+| `tax_amount` | `numeric(14,2)` | `NOT NULL` | Impuesto sintético del 19 % sobre `billed_revenue_amount` |
+| `currency_code` | `text` | `NOT NULL` | `COP` |
+| `run_id`, `source_system`, `source_file`, `source_file_hash`, `ingested_at` | ver §2.1 | `NOT NULL` | Metadatos de ejecución; `source_system = 'erp'` |
+
+### 2.25 `raw.payments`
+
+Un pago de un cliente. Clave natural: `payment_id`. Fecha de negocio: `paid_date`. Una factura tiene a lo sumo un pago, por su total.
+
+| Columna | Tipo | Nulabilidad | Descripción |
+|---|---|---|---|
+| `payment_id` | `text` | `NOT NULL` | Identificador del pago (`PAY-00000001`) |
+| `invoice_id` | `text` | `NOT NULL` | Factura pagada, de `raw.invoices` |
+| `customer_id` | `text` | `NOT NULL` | Cliente de la factura, de `raw.customers` |
+| `paid_date` | `date` | `NOT NULL` | Pago: `due_date` más −10 a +20 días, o `invoice_date` si esa fecha caería antes. Nunca pasa de la fecha de corte: un pago que caería después no existe aún |
+| `payment_amount` | `numeric(14,2)` | `NOT NULL` | Igual al `total_amount` de la factura |
+| `payment_method` | `text` | `NOT NULL` | `bank_transfer`, `check` o `card` |
+| `currency_code` | `text` | `NOT NULL` | `COP` |
+| `run_id`, `source_system`, `source_file`, `source_file_hash`, `ingested_at` | ver §2.1 | `NOT NULL` | Metadatos de ejecución; `source_system = 'erp'` |
+
+### 2.26 `raw.carrier_settlements`
+
+Una línea de liquidación a un transportador tercero: envío × carrier × concepto. Clave natural: `settlement_line_id`. Fecha de negocio: `settled_date`. Solo los envíos entregados de carriers `third_party` tienen liquidación, con una línea `freight`; no la tienen si su `settled_date` pasaría de la fecha de corte.
+
+| Columna | Tipo | Nulabilidad | Descripción |
+|---|---|---|---|
+| `settlement_line_id` | `text` | `NOT NULL` | Identificador de la línea (`STLL-00000001`) |
+| `settlement_id` | `text` | `NOT NULL` | Liquidación que agrupa las líneas de un carrier y un mes de `settled_date` (`STL-CAR-023-202603`). No es clave |
+| `shipment_id` | `text` | `NOT NULL` | Envío liquidado, de `raw.shipments` |
+| `carrier_id` | `text` | `NOT NULL` | Transportador del envío, de `raw.carriers`; siempre `third_party` |
+| `concept` | `text` | `NOT NULL` | `freight` |
+| `settled_date` | `date` | `NOT NULL` | Liquidación: la fecha UTC de `delivered_at` más 7 a 20 días |
+| `payable_amount` | `numeric(14,2)` | `NOT NULL` | Importe a pagar: `distance_km` de la ruta por 3 400 por km y por el `rate_index` del carrier |
+| `deduction_amount` | `numeric(14,2)` | `NOT NULL` | Descuento del 5 % de `payable_amount` si `delivered_at` es posterior a `promised_delivery_ts`; `0.00` si no |
+| `fuel_surcharge_amount` | `numeric(14,2)` | `NOT NULL` | Recargo de combustible: 9 % de `payable_amount` |
+| `settlement_status` | `text` | `NOT NULL` | `settled` |
+| `currency_code` | `text` | `NOT NULL` | `COP` |
+| `run_id`, `source_system`, `source_file`, `source_file_hash`, `ingested_at` | ver §2.1 | `NOT NULL` | Metadatos de ejecución; `source_system = 'erp'` |
+
+### 2.27 `raw.shipment_costs`
+
+Un componente del costo de un envío de la flota propia. Clave natural: `shipment_cost_id`. Fecha de negocio: `cost_date`. Todo envío base de un carrier `owned`, entregado o no, tiene tres filas: `fuel`, `driver` y `tolls`. Un envío con costos de flota no tiene liquidación en `raw.carrier_settlements`, y al revés.
+
+| Columna | Tipo | Nulabilidad | Descripción |
+|---|---|---|---|
+| `shipment_cost_id` | `text` | `NOT NULL` | Identificador del costo (`SHC-000000001`) |
+| `shipment_id` | `text` | `NOT NULL` | Envío, de `raw.shipments` |
+| `carrier_id` | `text` | `NOT NULL` | Transportador del envío, de `raw.carriers`; siempre `owned` |
+| `cost_component` | `text` | `NOT NULL` | `fuel`, `driver` o `tolls` |
+| `cost_date` | `date` | `NOT NULL` | La `pickup_date` del envío |
+| `cost_amount` | `numeric(14,2)` | `NOT NULL` | `distance_km` de la ruta por el costo por km del componente: 1 350 en `fuel`, 620 en `driver` y, en `tolls`, 410, 260 o 90 según el `road_type` de la ruta (`primary`, `secondary` o `tertiary`) |
+| `cost_center` | `text` | `NOT NULL` | Centro de costo del carrier (`CC-CAR-008`) |
+| `currency_code` | `text` | `NOT NULL` | `COP` |
+| `run_id`, `source_system`, `source_file`, `source_file_hash`, `ingested_at` | ver §2.1 | `NOT NULL` | Metadatos de ejecución; `source_system = 'erp'` |
+
 ## 3. Manifiesto de defectos
 
-`data/<perfil>/defect_manifest.json` declara las filas base de cada tabla TMS y los defectos inyectados en `shipments.csv`, `shipment_events.csv`, `fuel_transactions.csv`, `carrier_tenders.csv` y `carrier_incidents.csv`. Es determinista: no guarda fecha de generación, ruta de salida, versión ni `run_id`, y `tables` y `defects` siguen un orden fijo.
+`data/<perfil>/defect_manifest.json` declara las filas base de cada tabla TMS, los defectos inyectados en `shipments.csv`, `shipment_events.csv`, `fuel_transactions.csv`, `carrier_tenders.csv` y `carrier_incidents.csv`, y el reparto de las nueve entidades ERP y CRM entre su archivo principal y su archivo tardío (§1). Es determinista: no guarda fecha de generación, ruta de salida, versión ni `run_id`, y `tables`, `defects` y `late_files` siguen un orden fijo.
 
 | Campo | Tipo | Descripción |
 |---|---|---|
@@ -491,6 +678,12 @@ Una incidencia del transportador en un envío. Fecha de negocio: `reported_ts`.
 | `defects[].rate` | number | `count` dividido por el denominador de su tipo (tabla siguiente), redondeado a 5 decimales |
 | `defects[].rule_id` | string o `null` | Regla de [`06_quality_rules.md`](06_quality_rules.md) que lo detecta; `null` si el catálogo aún no tiene regla para ese defecto |
 | `defects[].expected_action` | string o `null` | `quarantine` o `alert`; `null` sin regla |
+| `late_files[]` | array | Una entrada por entidad con archivo tardío, en el orden de carga de §2 (`--source files`), sin `customers`: `tariffs`, `contacts`, `contracts`, `leads`, `invoices`, `invoice_lines`, `payments`, `carrier_settlements` y `shipment_costs` |
+| `late_files[].table` | string | Entidad, sin esquema (`invoices`) |
+| `late_files[].file` | string | Ruta del archivo tardío relativa a la carpeta del perfil (`late/invoices_late.csv`) |
+| `late_files[].key` | array de string | Columnas de la clave natural que decide el reparto (`["tariff_id", "valid_from"]` en `tariffs`) |
+| `late_files[].rows` | integer | Filas de la entidad, sumando el archivo principal y el tardío |
+| `late_files[].late_rows` | integer | Filas del archivo tardío; el principal tiene `rows - late_rows` |
 
 Defectos configurados. Cada fila afectada lleva un solo defecto. Viajes, tramos, `shipment_legs`, paradas, vehículos, conductores y dimensiones van limpios.
 
@@ -543,9 +736,23 @@ Con `demo` (50 000 envíos base y la semilla por defecto), `shipments.csv` tiene
 
 En `demo`, la base de `unclosed` son 4 813 incidencias elegibles de 5 036.
 
+El manifiesto no lista las claves de las filas tardías: son las del propio archivo tardío. Cada entrada se reproduce contando las filas de datos, sin la cabecera, de `<table>.csv` y de su `file`. Con `demo` y la semilla por defecto, `late_files` declara:
+
+| `table` | `rows` | `late_rows` |
+|---|---|---|
+| `tariffs` | 1800 | 47 |
+| `contacts` | 450 | 14 |
+| `contracts` | 150 | 4 |
+| `leads` | 500 | 17 |
+| `invoices` | 46152 | 1375 |
+| `invoice_lines` | 92304 | 2773 |
+| `payments` | 40013 | 1230 |
+| `carrier_settlements` | 22577 | 689 |
+| `shipment_costs` | 75198 | 2203 |
+
 ## 4. Linaje `tms` → `raw` → `stg` → `core`
 
-Las entidades TMS llegan a `raw` por extracción de `tms.<tabla>` por watermark, y los clientes por carga de `customers.csv` por hash (§2.2). Desde `raw`, la transformación la hace dbt. Las relaciones de `stg` son vistas; las de `quarantine` y `core` son tablas que se reconstruyen en cada `dbt build`.
+Las entidades TMS llegan a `raw` por extracción de `tms.<tabla>` por watermark, y las ERP y CRM por carga de sus archivos por hash (§2.2). Desde `raw`, la transformación la hace dbt. Las relaciones de `stg` son vistas; las de `quarantine` y `core` son tablas que se reconstruyen en cada `dbt build`.
 
 ```text
 tms.shipments ─► raw.shipments ─► stg_tms__shipments ─► stg_tms__shipments_validated ─┬─► stg_tms__shipments_valid ─► core.fact_shipments
@@ -570,6 +777,20 @@ tms.shipment_events   ─► raw.shipment_events
 tms.fuel_transactions ─► raw.fuel_transactions
 tms.carrier_tenders   ─► raw.carrier_tenders
 tms.carrier_incidents ─► raw.carrier_incidents
+```
+
+Las nueve tablas ERP y CRM nuevas aterrizan en `raw` desde sus archivos y todavía no tienen staging ni modelos en dbt. Cada una recibe su archivo principal y, en una carga posterior, su archivo tardío `late/<tabla>_late.csv`:
+
+```text
+tariffs.csv             ─► raw.tariffs
+contacts.csv            ─► raw.contacts
+contracts.csv           ─► raw.contracts
+leads.csv               ─► raw.leads
+invoices.csv            ─► raw.invoices
+invoice_lines.csv       ─► raw.invoice_lines
+payments.csv            ─► raw.payments
+carrier_settlements.csv ─► raw.carrier_settlements
+shipment_costs.csv      ─► raw.shipment_costs
 ```
 
 | Relación | Esquema | Materialización | Origen | Grano |

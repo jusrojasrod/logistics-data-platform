@@ -34,7 +34,7 @@
 Campos marcados como PII:
 
 - Nombre, documento, teléfono y correo del conductor.
-- Nombre, teléfono, correo y dirección de contacto del cliente.
+- Nombre, documento, teléfono, correo y dirección de contacto del cliente.
 
 Campos PII del conductor que existen hoy, en `tms.drivers` y `raw.drivers`:
 
@@ -46,6 +46,17 @@ Campos PII del conductor que existen hoy, en `tms.drivers` y `raw.drivers`:
 | `driver_email` | Correo electrónico |
 
 Hoy los leen solo `tms_writer`, que crea y escribe las tablas de `tms`, y `etl_writer`, que lee `tms` y es dueño de las tablas de `raw`. `bi_reader` y `dq_runner` no tienen permiso de lectura sobre `tms` ni sobre `raw`. Las tablas de conductores todavía no tienen capas de consumo: el enmascaramiento de estos campos llega con ellas, como el del resto de PII.
+
+Campos PII del contacto del cliente que existen hoy, en `raw.contacts`, cargada desde los archivos del CRM `contacts.csv` y `late/contacts_late.csv`:
+
+| Campo | Contenido |
+|---|---|
+| `customer_contact_name` | Nombre del contacto |
+| `contact_document` | Documento de identidad del contacto |
+| `customer_phone` | Teléfono |
+| `customer_email` | Correo electrónico |
+
+`contact_document` se clasifica como PII igual que el documento del conductor. La tabla no tiene dirección del contacto: solo la ciudad del cliente, que no es PII. Hoy la lee solo `etl_writer`, que la crea en la primera carga y es su dueño; `tms_writer` no tiene acceso a `raw`, y `bi_reader` y `dq_runner` no tienen permiso de lectura sobre `raw`. `raw.contacts` todavía no tiene capas de consumo: el enmascaramiento de estos campos llega con ellas, como el de los campos del conductor. Los archivos de origen están en `data/`, fuera del control de versiones.
 
 Tratamiento:
 

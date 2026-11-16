@@ -1,4 +1,8 @@
-"""Ingesta batch diaria al esquema raw: extracción de tms por watermark y archivos ERP por hash."""
+"""Ingesta batch diaria en raw: extracción de tms por watermark y archivos ERP y CRM por hash.
+
+Los archivos se cargan desde la carpeta de la escala configurada y después desde su
+subcarpeta de tardíos; si esa subcarpeta no existe, la tarea falla.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +14,10 @@ from airflow.sdk import dag, task
 
 @dag(
     dag_id="dag_ingest_batch",
-    description="Extrae las tablas de tms por watermark y carga los archivos ERP por hash en raw",
+    description=(
+        "Extrae las tablas de tms por watermark y carga los archivos ERP y CRM, "
+        "de la carpeta y de late/, por hash en raw"
+    ),
     start_date=datetime(2026, 1, 1, tzinfo=ZoneInfo("America/Bogota")),
     schedule="0 2 * * *",
     catchup=False,
@@ -38,18 +45,23 @@ def dag_ingest_batch() -> None:
 
     @task
     def load_erp_files() -> dict[str, int]:
-        """Carga los archivos ERP de la escala configurada y devuelve las filas por archivo."""
+        """Carga los archivos ERP y CRM de la escala configurada y después sus tardíos.
+
+        Devuelve las filas insertadas por archivo; los tardíos tienen nombres propios
+        (``<tabla>_late.csv``), así que no se pisan con los de la carpeta principal.
+        """
         from pathlib import Path
 
         import psycopg
 
         from nexora.common.config import settings
-        from nexora.ingestion.batch.loaders import run_files
+        from nexora.ingestion.batch.loaders import LATE_DIRECTORY, run_files
 
         directory = Path(settings.data_dir) / settings.scale
         with psycopg.connect(settings.etl_conninfo()) as conn:
             results = run_files(conn, directory)
-        return {result.source_file: result.rows for result in results}
+            late_results = run_files(conn, directory / LATE_DIRECTORY)
+        return {result.source_file: result.rows for result in results + late_results}
 
     extract_tms()
     load_erp_files()
