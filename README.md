@@ -2,7 +2,7 @@
 
 Plataforma de analítica y gobierno de datos para una operación logística: ingesta de fuentes transaccionales y APIs, un data warehouse dimensional, indicadores de negocio, dashboards y controles de calidad y gobierno.
 
-> **Aviso:** Nexora Logística es una empresa ficticia creada para este proyecto. Todos los datos son sintéticos y se generan con una semilla fija. No se utiliza información de empresas ni de personas reales.
+> **Aviso:** Nexora Logística es una empresa ficticia creada para este proyecto. Todos los datos son sintéticos. No se utiliza información de empresas ni de personas reales.
 
 ---
 
