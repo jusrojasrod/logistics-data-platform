@@ -52,7 +52,7 @@ dbt-parse: ## Valida el proyecto dbt
 dbt-build: ## Construye y prueba los modelos dbt
 	$(DBT) build --project-dir dbt --profiles-dir dbt
 
-data: ## Genera datos sintéticos en data/<SCALE>: make data SCALE=demo|local
+data: ## Genera datos sintéticos en data/<SCALE>: make data SCALE=demo|local|benchmark
 	bash scripts/generate_data.sh --scale $(SCALE) --out data/$(SCALE)
 
 export-superset: ## Exporta dashboards de Superset a YAML

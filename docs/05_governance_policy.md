@@ -33,8 +33,19 @@
 
 Campos marcados como PII:
 
-- Documento, teléfono y correo del conductor.
+- Nombre, documento, teléfono y correo del conductor.
 - Nombre, teléfono, correo y dirección de contacto del cliente.
+
+Campos PII del conductor que existen hoy, en `tms.drivers` y `raw.drivers`:
+
+| Campo | Contenido |
+|---|---|
+| `driver_name` | Nombre del conductor |
+| `driver_document` | Documento de identidad |
+| `driver_phone` | Teléfono |
+| `driver_email` | Correo electrónico |
+
+Hoy los leen solo `tms_writer`, que crea y escribe las tablas de `tms`, y `etl_writer`, que lee `tms` y es dueño de las tablas de `raw`. `bi_reader` y `dq_runner` no tienen permiso de lectura sobre `tms` ni sobre `raw`. Las tablas de conductores todavía no tienen capas de consumo: el enmascaramiento de estos campos llega con ellas, como el del resto de PII.
 
 Tratamiento:
 

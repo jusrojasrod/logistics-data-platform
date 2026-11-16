@@ -50,11 +50,15 @@ Orquestación: Apache Airflow 3. Transformación: dbt. Todo corre en contenedore
 ## 3. Flujo
 
 ```text
-generador ─► CSV de envíos y dimensiones TMS ─► publicador (tms_writer) ─► tms.<tabla> ─► conector por watermark (etl_writer) ─► raw.<tabla>
-generador ─► customers.csv (ERP) ─────────────────────────────────────────────────────► conector por hash (etl_writer) ──────► raw.customers
+generador ─► CSV TMS ─► publicador (tms_writer) ─► tms.<tabla> ─► conector por watermark (etl_writer) ─► raw.<tabla>
+generador ─► customers.csv (ERP) ───────────────────────────────► conector por hash (etl_writer) ──────► raw.customers
+
+CSV TMS: carriers, routes, service_types, shipments, vehicles, drivers, trips, trip_legs,
+         shipment_legs, shipment_stops, shipment_events, fuel_transactions,
+         carrier_tenders, carrier_incidents
 ```
 
-1. El generador escribe los CSV de cada perfil. El publicador inserta los envíos y las dimensiones TMS en el esquema `tms`, que simula la base operativa del TMS: solo inserciones, con `updated_at` del reloj de la base en cada fila.
+1. El generador escribe en flujo los CSV de cada perfil: envíos, dimensiones TMS, flota propia (`vehicles`, `drivers`), viajes y tramos (`trips`, `trip_legs`), envíos por tramo (`shipment_legs`), paradas (`shipment_stops`), eventos (`shipment_events`), combustible (`fuel_transactions`), ofertas (`carrier_tenders`) e incidencias (`carrier_incidents`). El publicador inserta todas esas entidades en el esquema `tms`, que simula la base operativa del TMS, por bloques y en el mismo orden en que se extraen: solo inserciones, con `updated_at` del reloj de la base en cada fila. El perfil `benchmark` solo se genera a archivos y no se publica.
 2. Airflow dispara la ingesta según el calendario del dominio. `dag_ingest_batch` corre con el calendario `0 2 * * *`, sin catchup, con una ejecución activa a la vez y 3 reintentos por tarea.
 3. La tarea `extract_tms` extrae cada `tms.<tabla>` a `raw.<tabla>` con la ventana `(watermark, max(updated_at)]`; en la misma transacción inserta en `raw` y avanza `meta.batch_watermarks`. Sin filas nuevas no inserta nada.
 4. La tarea `load_erp_files` carga los `customers*.csv` en `raw.customers`; un archivo cuyo SHA-256 ya está en `meta.ingested_files` se omite.

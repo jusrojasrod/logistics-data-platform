@@ -59,14 +59,21 @@ PSQL="docker exec -i nexora-postgres psql -U nexora -d nexora -v ON_ERROR_STOP=1
 python -m nexora.ingestion.batch.loaders --source tms
 ```
 
-Cada ejecución extrae, por tabla, las filas de `tms.<tabla>` con `updated_at` posterior a su watermark e inserta `0` filas si no hay nuevas. Estado de los watermarks y filas pendientes:
+Cada ejecución recorre las catorce tablas de `tms` en el orden de publicación y extrae, por tabla, las filas de `tms.<tabla>` con `updated_at` posterior a su watermark; inserta `0` filas si no hay nuevas. Estado de los watermarks y filas pendientes de una tabla (`<tabla>` es cualquiera de las de `tms`, por ejemplo `shipment_events`):
 
 ```bash
 $PSQL -c "select * from meta.batch_watermarks order by 1"
-$PSQL -c "select count(*) from tms.shipments s join meta.batch_watermarks w on w.source_table = 'tms.shipments' where s.updated_at > w.watermark_ts"
+$PSQL -c "select count(*) from tms.<tabla> t left join meta.batch_watermarks w on w.source_table = 'tms.<tabla>' where w.watermark_ts is null or t.updated_at > w.watermark_ts"
 ```
 
 Si una extracción falla, su transacción se revierte: la tabla afectada no recibe filas y su watermark no cambia, así que basta con ejecutarla de nuevo. Las tablas ya extraídas en esa ejecución conservan su avance.
+
+Si falta una tabla en `tms`, la ejecución se detiene con `LookupError: no existe la tabla de origen tms.<tabla>`. Las tablas anteriores de esa misma ejecución ya quedaron extraídas, con sus filas en `raw` y su watermark; la que falta y las siguientes no se intentan, y no se crea nada para ellas en `raw` ni en `meta`. Se corrige publicando la carpeta completa y repitiendo la extracción; las tablas ya extraídas no traen filas repetidas:
+
+```bash
+bash scripts/seed_db.sh demo
+python -m nexora.ingestion.batch.loaders --source tms
+```
 
 Retroceder un watermark vuelve a extraer la ventana entre el valor nuevo y el actual:
 
@@ -80,6 +87,17 @@ Solo procede si las filas de esa ventana no están en `raw`. Como `raw` es appen
 ```bash
 $PSQL -c "select count(*) from (select shipment_id from raw.shipments group by 1 having count(distinct run_id) > 1) s"
 ```
+
+Generar y medir el perfil `benchmark` sin publicarlo. Solo se genera a archivos: el publicador rechaza su carpeta con código de salida 2 y no abre conexión, y `scripts/seed_db.sh` no acepta ese perfil. La salida va a una carpeta ignorada por git y se borra al terminar:
+
+```bash
+/usr/bin/time -v python -m nexora.generators.cli --scale benchmark --out data/tmp/benchmark 2> data/tmp/time_benchmark.txt
+grep -E 'Elapsed \(wall clock\)|Maximum resident set size|Exit status' data/tmp/time_benchmark.txt
+du -sb data/tmp/benchmark
+rm -rf data/tmp/benchmark
+```
+
+Las cifras medidas se registran en `benchmarks/results/` con su fecha, comando y salida.
 
 ### 4.2 Archivos ERP
 

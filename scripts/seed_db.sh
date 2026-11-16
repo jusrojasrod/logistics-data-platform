@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Genera el perfil indicado en data/<perfil> y publica los envíos y las
-# dimensiones TMS en el esquema tms. No carga raw: raw se alimenta con el
-# conector batch de ingesta.
+# Genera el perfil indicado en data/<perfil> y publica todas las entidades TMS
+# de la carpeta en el esquema tms: dimensiones, envíos, flota, viajes, tramos,
+# envíos por tramo, paradas, eventos, combustible, ofertas e incidencias. No
+# carga raw: raw se alimenta con el conector batch de ingesta.
 #
 # Uso: scripts/seed_db.sh demo|local
 #
-# La publicación solo inserta filas nuevas: las dimensiones por su id y los
-# envíos por shipment_id, así una segunda ejecución con la misma semilla no
-# inserta nada. Para partir de una base vacía se usa `make reset`.
+# El perfil benchmark no se acepta: solo se genera a archivos y no se publica.
+# La publicación solo inserta filas nuevas, cada tabla por su clave natural, así
+# una segunda ejecución con la misma semilla no inserta nada. Para partir de una
+# base vacía se usa `make reset`.
 # Conexión: NEXORA_TMS_DSN y TMS_WRITER_PASSWORD, del entorno o de `.env` en la
 # raíz del repo (el script se ejecuta desde ahí).
 # Intérprete: el del entorno virtual activo; si no hay, `.venv` del repo;
