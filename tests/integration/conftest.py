@@ -21,20 +21,14 @@ import pytest
 from dotenv import dotenv_values
 from psycopg import sql
 
-from nexora.generators.defects import inject_defects
-from nexora.generators.dimensions import write_dimensions
-from nexora.generators.shipments import (
-    SHIPMENTS_COLUMNS,
-    SHIPMENTS_ENTITY,
-    ShipmentTable,
-    generate_shipments,
-)
+from nexora.generators.dataset import write_dataset
 
 INTEGRATION_DIR = Path(__file__).resolve().parent
 REPO_ROOT = INTEGRATION_DIR.parents[1]
 ENV_FLAG = "NEXORA_INTEGRATION"
 
 SCHEMA_PREFIX = "it_"
+SCALE = "demo"
 SHIPMENTS = 500
 SEED = 42
 MONTHS = 1
@@ -110,8 +104,10 @@ def schemas(pg: psycopg.Connection) -> Iterator[Schemas]:
 
 @pytest.fixture()
 def source_dir(tmp_path: Path) -> Path:
-    """Carpeta con las dimensiones y 500 envíos base con defectos (semilla 42, un mes)."""
-    rows = inject_defects(generate_shipments(SHIPMENTS, SEED, MONTHS), SEED).rows
-    write_dimensions(tmp_path)
-    ShipmentTable(name=SHIPMENTS_ENTITY, columns=SHIPMENTS_COLUMNS, rows=rows).write_csv(tmp_path)
+    """Carpeta con todos los CSV del generador y su manifiesto.
+
+    500 envíos base con defectos (semilla 42, un mes), las dimensiones, la flota
+    y las entidades que cuelgan de envíos y viajes, con sus defectos.
+    """
+    write_dataset(tmp_path, SCALE, SHIPMENTS, SEED, MONTHS)
     return tmp_path
