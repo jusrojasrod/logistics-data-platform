@@ -21,6 +21,7 @@ import os
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ from nexora.ingestion.api.landing import (
     PAYLOADS_COLLECTION,
     PAYLOADS_DATABASE,
 )
+from nexora.ingestion.api.registry import RunRegistry
 
 INTEGRATION_DIR = Path(__file__).resolve().parent
 REPO_ROOT = INTEGRATION_DIR.parents[1]
@@ -192,6 +194,16 @@ def mongo_api_collections(mongo_app: MongoClient) -> Iterator[MongoCollections]:
             if name.startswith(prefix)
         ]
         assert not remaining, f"quedaron colecciones temporales: {remaining}"
+
+
+@pytest.fixture()
+def run_registry(pg: psycopg.Connection, schemas: Schemas) -> Iterator[RunRegistry]:
+    """Registro de API en el esquema ``meta`` temporal, sin tocar tablas principales."""
+    timestamp = datetime(2026, 11, 18, 12, 0, tzinfo=UTC)
+    registry = RunRegistry(pg, schema=schemas.meta, started_at=timestamp, pages=1, documents=1)
+    registry.ensure_tables()
+    registry.upsert_datasets(updated_at=timestamp)
+    yield registry
 
 
 @pytest.fixture()

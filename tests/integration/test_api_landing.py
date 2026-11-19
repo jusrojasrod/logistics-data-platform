@@ -13,9 +13,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from psycopg import sql
 from pymongo.errors import DuplicateKeyError, WriteError
 
+from nexora.common.api_contracts import SHIPMENTS_CONTRACT
 from nexora.ingestion.api.client import ApiPage, PageEnvelope
+from nexora.ingestion.api.drift import ApiSchemaDriftError, land_and_flag_drift
 from nexora.ingestion.api.landing import (
     DRIFT_COLLECTION,
     DRIFT_RULE_ID,
@@ -28,6 +31,13 @@ from nexora.ingestion.api.landing import (
     land_pages,
     record_drift,
     sha256_bytes,
+)
+from nexora.ingestion.api.registry import (
+    DATASETS,
+    FRESHNESS_SLO_MINUTES,
+    STATUS_BLOCKED,
+    STATUS_OK,
+    RunRegistry,
 )
 
 RUN = "it-run-landing"
@@ -215,6 +225,112 @@ def test_drift_rows_are_blocking_and_payload_is_preserved(mongo_api_collections:
     assert row["detected_at"] == TIMESTAMP
     assert mongo_api_collections.payloads.count_documents({}) == 1
     assert mongo_api_collections.payloads.find_one({})["payload"] == page.payload
+
+
+def _contract_item() -> dict[str, Any]:
+    """Elemento conforme al contrato de ``shipments`` para la prueba de drift."""
+    return {
+        "shipment_id": "s-1",
+        "customer_id": "c-1",
+        "carrier_id": "ca-1",
+        "route_id": "r-1",
+        "service_type_id": "st-1",
+        "pickup_ts": "2026-11-18T08:00:00Z",
+        "pickup_date": "2026-11-18",
+        "promised_delivery_ts": None,
+        "picked_up_at": "2026-11-18T09:00:00Z",
+        "delivered_at": None,
+        "ordered_qty": 10,
+        "delivered_qty": None,
+        "ordered_weight_kg": 12.5,
+        "delivered_weight_kg": None,
+        "definitive_failure_flag": False,
+    }
+
+
+def test_registry_creates_tables_and_seeds_six_datasets_once(
+    pg: Any, run_registry: RunRegistry, schemas: Any
+) -> None:
+    rows = list(run_registry.datasets())
+    assert len(rows) == 6
+    assert {row[0] for row in rows} == {definition.dataset_name for definition in DATASETS}
+    assert {row[1] for row in rows} == {definition.source_system for definition in DATASETS}
+    assert {row[3] for row in rows} == {FRESHNESS_SLO_MINUTES} == {120}
+
+    assert run_registry.upsert_datasets() == 6
+    assert len(list(run_registry.datasets())) == 6
+
+    tables = {
+        row[0]
+        for row in pg.execute(
+            "select table_name from information_schema.tables where table_schema = %s",
+            (schemas.meta,),
+        ).fetchall()
+    }
+    assert {"datasets", "api_runs"} <= tables
+
+
+def test_registry_records_one_run_per_dataset_without_duplicates(
+    run_registry: RunRegistry,
+) -> None:
+    for definition in DATASETS:
+        run_registry.record_run(
+            RUN, definition.dataset_name, status=STATUS_OK, pages=2, documents=2
+        )
+    rows = list(run_registry.runs())
+    assert len(rows) == 6
+    assert {row[1] for row in rows} == {d.dataset_name for d in DATASETS}
+    assert {row[2] for row in rows} == {STATUS_OK}
+
+    run_registry.record_run(RUN, "tms_shipments", status=STATUS_OK, pages=3, documents=3)
+    rows = list(run_registry.runs())
+    assert len(rows) == 6
+    assert next(row for row in rows if row[1] == "tms_shipments")[3] == 3
+
+
+def test_drift_lands_records_blocks_then_raises(
+    mongo_api_collections: Any, run_registry: RunRegistry, pg: Any, schemas: Any
+) -> None:
+    item = _contract_item()
+    item.pop("ordered_weight_kg")
+
+    with pytest.raises(ApiSchemaDriftError) as exc:
+        land_and_flag_drift(
+            mongo_api_collections.payloads,
+            mongo_api_collections.drift,
+            [_page(items=[item])],
+            SHIPMENTS_CONTRACT,
+            run_id=RUN,
+            source_system=SOURCE,
+            registry=run_registry,
+            clock=lambda: TIMESTAMP,
+        )
+
+    assert exc.value.drift_count == 1
+    payload = mongo_api_collections.payloads.find_one({"run_id": RUN})
+    assert payload is not None
+    assert payload["payload"]["data"][0] == item
+    assert all(payload[name] is not None for name in METADATA_FIELDS)
+    row = mongo_api_collections.drift.find_one({"run_id": RUN})
+    assert row is not None
+    assert row["rule_id"] == DRIFT_RULE_ID == "DQ-008"
+    assert row["severity"] == DRIFT_SEVERITY == "blocking"
+    assert row["field"] == "ordered_weight_kg"
+    assert row["change_type"] == "removed"
+    assert row["source_key"] == "s-1"
+
+    stored = pg.execute(
+        sql.SQL(
+            "select status, drift_count, error_class, source_system "
+            "from {table} where run_id = %s and dataset_name = %s"
+        ).format(table=sql.Identifier(schemas.meta, "api_runs")),
+        (RUN, "tms_shipments"),
+    ).fetchone()
+    assert stored is not None
+    assert stored[0] == STATUS_BLOCKED == "blocked"
+    assert stored[1] == 1
+    assert stored[2] == "ApiSchemaDriftError"
+    assert stored[3] == SOURCE
 
 
 def test_temporary_collections_stay_outside_production_databases(
