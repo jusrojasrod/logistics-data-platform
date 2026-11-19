@@ -77,10 +77,12 @@ services:
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-nexora}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:-change-me}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:-change-me}
     ports:
       - "127.0.0.1:${MONGO_PORT:-27017}:27017"
     volumes:
       - mongodata:/data/db
+      - ./infra/mongo/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test:
         [
