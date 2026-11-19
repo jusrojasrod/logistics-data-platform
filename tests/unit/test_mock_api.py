@@ -7,6 +7,7 @@ levantar un servidor. El repositorio en memoria sostiene los tres recursos.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections import Counter
 from datetime import UTC, date, datetime
@@ -14,12 +15,23 @@ from typing import Any
 
 import pytest
 
-from nexora.common.api_contracts import RESOURCE_CONTRACTS, Field, ResourceContract
+from nexora.common.api_contracts import PAGINATION_KEYS, RESOURCE_CONTRACTS, Field, ResourceContract
 from nexora.generators.api.app import create_app
+from nexora.generators.api.drift import (
+    ADDED_FIELD,
+    CHANGE_TYPES,
+    DriftPlan,
+)
+from nexora.generators.api.faults import (
+    HTTP_INTERNAL_SERVER_ERROR,
+    HTTP_TOO_MANY_REQUESTS,
+    FaultPlan,
+)
 from nexora.generators.api.repository import InMemoryRepository
 
 TOKEN = "token-de-prueba"
 ROWS_PER_RESOURCE = 7
+NO_FAULTS = 0
 
 
 def _sample(field: Field, position: int) -> Any:
@@ -109,13 +121,30 @@ def repository() -> InMemoryRepository:
     return repo
 
 
+def _client(
+    repository: InMemoryRepository,
+    *,
+    faults: FaultPlan | None = None,
+    drift: DriftPlan | None = None,
+) -> _AsgiClient:
+    """Cliente en proceso con los planes inyectados; sin fallos ni drift por defecto."""
+    return _AsgiClient(
+        create_app(
+            repository,
+            TOKEN,
+            fault_plan=faults if faults is not None else FaultPlan(max_failures=NO_FAULTS),
+            drift_plan=drift if drift is not None else DriftPlan(enabled=False),
+        )
+    )
+
+
 @pytest.fixture
 def client(repository: InMemoryRepository) -> _AsgiClient:
-    return _AsgiClient(create_app(repository, TOKEN))
+    return _client(repository)
 
 
 def test_health_does_not_require_token(repository: InMemoryRepository) -> None:
-    status, _, body = _AsgiClient(create_app(repository, TOKEN)).get("/health", token=None)
+    status, _, body = _client(repository).get("/health", token=None)
     assert status == 200
     assert body == {"status": "ok"}
 
@@ -196,3 +225,124 @@ def test_json_types_follow_the_contract(client: _AsgiClient) -> None:
     assert item["pickup_ts"] == "2026-11-01T12:00:00Z"
     assert item["definitive_failure_flag"] is True
     assert item["customer_id"] is None
+
+
+def _digest(endpoint: str, page: int) -> int:
+    """Reimplementación independiente de la fórmula documentada para las pruebas."""
+    payload = f"{endpoint}{page}".encode()
+    return int.from_bytes(hashlib.sha256(payload).digest(), "big")
+
+
+def test_fault_pages_are_deterministic() -> None:
+    endpoint = RESOURCE_CONTRACTS["shipments"].endpoint
+    pages = range(1, 801)
+
+    first = FaultPlan().faulting_pages(endpoint, pages)
+    second = FaultPlan().faulting_pages(endpoint, pages)
+
+    assert first == second
+    assert any(item.status == HTTP_INTERNAL_SERVER_ERROR for item in first.values())
+    assert any(item.status == HTTP_TOO_MANY_REQUESTS for item in first.values())
+
+
+def test_faulting_page_retries_then_serves_content() -> None:
+    repository = InMemoryRepository()
+    repo_rows = _rows(RESOURCE_CONTRACTS["shipments"], 600)
+    repository.add("shipments", repo_rows)
+    plan = FaultPlan(max_failures=2)
+    endpoint = RESOURCE_CONTRACTS["shipments"].endpoint
+    found = plan.faulting_pages(endpoint, range(1, 601))
+    five_hundred = next(page for page, item in found.items() if item.status == 500)
+    too_many = next(page for page, item in found.items() if item.status == 429)
+
+    for page in (five_hundred, too_many):
+        expected = found[page]
+        client = _client(repository, faults=plan)
+        path = f"/v1/shipments?page={page}&page_size=1"
+
+        status, headers, _ = client.get(path)
+        assert status == expected.status
+        assert headers["retry-after"] == str(expected.retry_after_s)
+        assert 1 <= expected.retry_after_s <= 5
+
+        assert client.get(path)[0] == expected.status
+
+        status, _, body = client.get(path)
+        assert status == 200
+        assert set(body) == set(PAGINATION_KEYS)
+        assert body["page"] == page
+        assert len(body["data"]) == 1
+        natural = RESOURCE_CONTRACTS["shipments"].natural_key
+        assert set(body["data"][0]) == set(RESOURCE_CONTRACTS["shipments"].field_names)
+        assert body["data"][0][natural] == str(repo_rows[page - 1][natural])
+
+
+@pytest.mark.parametrize("resource", sorted(RESOURCE_CONTRACTS))
+def test_page_one_always_drifted_with_flag(repository: InMemoryRepository, resource: str) -> None:
+    contract = RESOURCE_CONTRACTS[resource]
+    baseline = _client(repository)
+    drifted = _client(repository, drift=DriftPlan(enabled=True))
+    plan = DriftPlan(enabled=True)
+    path = f"/v1/{resource}?page=1&page_size={ROWS_PER_RESOURCE}"
+
+    _, _, original = baseline.get(path)
+    status, _, altered = drifted.get(path)
+    assert status == 200
+    assert len(original["data"]) == len(altered["data"]) == ROWS_PER_RESOURCE
+
+    for before, after in zip(original["data"], altered["data"], strict=True):
+        assert after[contract.natural_key] == before[contract.natural_key]
+        differences = {key for key in set(before) | set(after) if before.get(key) != after.get(key)}
+        assert len(differences) == 1
+        field = differences.pop()
+        assert field != contract.natural_key
+        change = plan.change_for(contract, 1, str(before[contract.natural_key]))
+        assert change.field == field
+        assert change.change_type in CHANGE_TYPES
+
+
+@pytest.mark.parametrize("resource", sorted(RESOURCE_CONTRACTS))
+def test_drift_page_set_matches_hash_and_is_repeatable(resource: str) -> None:
+    endpoint = RESOURCE_CONTRACTS[resource].endpoint
+    pages = range(1, 801)
+    plan = DriftPlan(enabled=True)
+
+    with_flag = {page for page in pages if plan.is_drifted(endpoint, page)}
+    again = {page for page in pages if DriftPlan(enabled=True).is_drifted(endpoint, page)}
+
+    assert 1 in with_flag
+    assert with_flag == again
+    expected = {1} | {page for page in pages if page != 1 and _digest(endpoint, page) % 100 < 1}
+    assert with_flag == expected
+
+    without_flag = {page for page in pages if DriftPlan(enabled=False).is_drifted(endpoint, page)}
+    assert without_flag == set()
+
+
+def test_added_change_uses_a_field_outside_the_contract(
+    repository: InMemoryRepository,
+) -> None:
+    contract = RESOURCE_CONTRACTS["shipments"]
+    assert ADDED_FIELD not in contract.field_names
+    drifted = _client(repository, drift=DriftPlan(enabled=True))
+    _, _, body = drifted.get(f"/v1/shipments?page=1&page_size={ROWS_PER_RESOURCE}")
+
+    for item in body["data"]:
+        if ADDED_FIELD in item:
+            assert set(contract.field_names) <= set(item)
+
+
+def test_drift_flag_is_read_at_factory_time(
+    repository: InMemoryRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = f"/v1/shipments?page=1&page_size={ROWS_PER_RESOURCE}"
+
+    monkeypatch.setenv("NEXORA_API_DRIFT", "0")
+    off = _AsgiClient(create_app(repository, TOKEN, fault_plan=FaultPlan(max_failures=NO_FAULTS)))
+    _, _, plain = off.get(path)
+
+    monkeypatch.setenv("NEXORA_API_DRIFT", "1")
+    on = _AsgiClient(create_app(repository, TOKEN, fault_plan=FaultPlan(max_failures=NO_FAULTS)))
+    _, _, altered = on.get(path)
+
+    assert plain["data"] != altered["data"]
