@@ -17,7 +17,7 @@ La operación cubre recogida en origen, tránsito —con una o varias paradas—
 |---|---|---|
 | TMS | Envíos, paradas, eventos, viajes, carriers, vehículos, conductores, ofertas | PostgreSQL |
 | ERP | Facturas, tarifas, pagos, liquidaciones a carriers, costos de flota | CSV y Excel |
-| CRM | Contactos, contratos, oportunidades | Excel |
+| CRM (CSV) | Contactos, contratos, oportunidades | CSV |
 | GPS | Telemetría de vehículos | JSON |
 | APIs externas | Clima, geocodificación, tasa de cambio | REST |
 

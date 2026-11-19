@@ -6,6 +6,7 @@
 |---|---|---|---|
 | PostgreSQL | `nexora-postgres` | 5432 | Warehouse y metadatos |
 | MongoDB | `nexora-mongo` | 27017 | JSON y telemetría |
+| Mock TMS API | `nexora-mock-api` | 8090 | `make api`; escucha en 8000 dentro del contenedor y publica solo en `127.0.0.1` |
 | Airflow API | `nexora-airflow-api` | 8080 | Interfaz web y API |
 | Airflow scheduler | `nexora-airflow-scheduler` | — | Programación |
 | Airflow dag-processor | `nexora-airflow-dag-processor` | — | Parseo de DAGs |
@@ -137,6 +138,55 @@ python -m nexora.ingestion.batch.loaders --source files --input data/demo/late
 
 La recarga añade otra copia de las filas del archivo en `raw.<tabla>`, porque `raw` es append-only. `stg_erp__customers` conserva una fila por `customer_id`, la de `ingested_at` más reciente; las nueve tablas ERP y CRM nuevas aún no tienen staging, así que una recarga deja en ellas filas repetidas por su clave natural.
 
+### 4.3 Reproceso de una fuente de API
+
+Las seis fuentes de `dag_ingest_apis` se reproducen por dataset:
+
+```bash
+python -m nexora.ingestion.api.cli extract --dataset <dataset> --run-id <id>
+python -m nexora.ingestion.api.cli extract --dataset weather_api --run-id <id> --on-date YYYY-MM-DD
+```
+
+Los datasets son `tms_shipments`, `tms_shipment_events`, `tms_carrier_incidents`, `weather_api`, `geocoding_api` y `exchange_rate_api`. `--on-date` fija la fecha de los simuladores externos. Para reprocesar a propósito se usa un `run_id` nuevo: la clave de aterrizaje es `(run_id, endpoint, page)`, así que repetir el mismo `run_id` con el mismo contenido no inserta nada y repetirlo con contenido distinto falla con `PayloadRewriteError`. Nada de lo aterrizado en `raw.api_payloads` se borra ni se reescribe.
+
+Para las tres fuentes TMS, contrastar las claves naturales con la tabla de origen:
+
+```bash
+python -m nexora.ingestion.api.cli verify-keys --dataset tms_shipments --run-id <id>
+```
+
+`verify-keys` falla si `tms.<tabla>` está vacía (`count(*) = 0`) y si el número de claves aterrizadas no coincide con el de la fuente. El DAG queda pausado al crearse; `airflow dags test dag_ingest_apis <fecha ISO>` lo ejecuta sin despausarlo y cada tarea genera su propio `run_id`.
+
+### 4.4 Activación del drift del mock
+
+El drift se activa con `NEXORA_API_DRIFT=1` en el entorno del servicio `mock-api` y se desactiva con `0`, que es el valor por defecto:
+
+```bash
+NEXORA_API_DRIFT=1 docker compose up -d mock-api
+# reproducir la fuente afectada con un run_id nuevo (§4.3)
+NEXORA_API_DRIFT=0 docker compose up -d mock-api
+```
+
+Con la bandera encendida, la página 1 de cada recurso de `tms` lleva drift garantizado y el resto se elige por `sha256(endpoint + página) % 100 < 1`. Cada payload alterado cambia un solo campo no clave, con `added`, `removed` o `retyped`; la clave natural no se toca. El resultado observable es una fila por payload alterado en `meta.api_schema_drift` con `rule_id = DQ-008`, `endpoint`, `field` y `change_type`, una fila de `meta.api_runs` en `blocked` y el payload conservado en `raw.api_payloads`. La tarea falla y ese fallo es la alerta.
+
+```bash
+$PSQL -c "select dataset_name, status, drift_count from meta.api_runs where run_id = '<id>'"
+set -a; . ./.env; set +a
+docker compose exec -T mongo mongosh --quiet \
+    -u nexora_app -p "$MONGO_APP_PASSWORD" --authenticationDatabase admin \
+    --eval 'db.getSiblingDB("meta").api_schema_drift.countDocuments({run_id:"<id>"})'
+```
+
+Con la bandera apagada, las ejecuciones horarias no se bloquean por este motivo.
+
+### 4.5 Frescura de las fuentes de API
+
+```bash
+python -m nexora.ingestion.api.cli freshness
+```
+
+Imprime una línea por dataset con `now() - max(ingested_at)` en minutos y su SLO. El objetivo está en `meta.datasets.freshness_slo_minutes = 120` para las seis fuentes (T1, DQ-006b) y la marca se lee del `endpoint` del dataset en `raw.api_payloads`. `dag_ingest_apis` corre cada hora (`0 * * * *`) con una tarea por fuente y 2 reintentos. Si una fuente supera el objetivo, revisar el estado de su última fila en `meta.api_runs` y, si hay cambios de esquema, aplicar §4.4 antes de reprocesar. El contrato de las colecciones y de los recursos está en [`03_data_dictionary.md`](03_data_dictionary.md) §11.
+
 ## 5. Archivo y restauración
 
 - A los 6 meses, `raw` pasa a Parquet en almacenamiento de objetos.
@@ -163,6 +213,7 @@ Si la restauración no cuadra, el archivo se considera inválido y se repite la 
 - Cortafuegos cerrado salvo SSH desde IP conocida.
 - Sin puertos públicos: el acceso a BI va por túnel con autenticación.
 - Rotación de secretos documentada y ejecutada al menos cada trimestre.
+- El token Bearer de la API, su rotación y el usuario de aplicación de MongoDB están en [`05_governance_policy.md`](05_governance_policy.md) §10.
 - `.env` con permisos restringidos y fuera de git.
 
 ### 7.1 Rotación de contraseñas locales de los roles
