@@ -78,3 +78,17 @@ def create_app(
 
     app.include_router(router)
     return app
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    from nexora.common.config import settings
+    from nexora.generators.api.repository import PostgresRepository
+
+    token = settings.api_token.get_secret_value() if settings.api_token else ""
+    uvicorn.run(
+        create_app(PostgresRepository(settings.pg_dsn), token),
+        host="0.0.0.0",
+        port=8000,
+    )
