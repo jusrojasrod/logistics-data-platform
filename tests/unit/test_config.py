@@ -12,6 +12,16 @@ ENV_VARS = (
     "NEXORA_TMS_DSN",
     "ETL_WRITER_PASSWORD",
     "TMS_WRITER_PASSWORD",
+    "NEXORA_API_PORT",
+    "NEXORA_API_BASE_URL",
+    "NEXORA_API_TOKEN",
+    "NEXORA_API_DRIFT",
+    "NEXORA_API_LIVE",
+    "NEXORA_MONGO_APP_DSN",
+    "MONGO_APP_PASSWORD",
+    "NEXORA_WEATHER_URL",
+    "NEXORA_GEOCODING_URL",
+    "NEXORA_EXCHANGE_RATE_URL",
 )
 
 
@@ -68,3 +78,59 @@ def test_dsn_password_wins(clean_env: pytest.MonkeyPatch) -> None:
 def test_password_is_not_exposed_in_repr(clean_env: pytest.MonkeyPatch) -> None:
     clean_env.setenv("ETL_WRITER_PASSWORD", "from-env-etl")
     assert "from-env-etl" not in repr(build_settings())
+
+
+def test_api_defaults(clean_env: pytest.MonkeyPatch) -> None:
+    s = build_settings()
+    assert s.api_port == 8090
+    assert s.api_base_url == "http://127.0.0.1:8090"
+    assert s.api_token is None
+    assert s.api_timeout_s == 10.0
+    assert s.api_page_size == 200
+    assert s.api_rate_limit == 5
+    assert s.api_drift == 0
+    assert s.api_live == 0
+    assert s.api_cache_dir == "data/tmp/api_cache"
+    assert s.api_seed == 42
+    assert s.weather_url is None
+    assert s.geocoding_url is None
+    assert s.exchange_rate_url is None
+    assert s.mongo_app_dsn.startswith("mongodb://nexora_app:")
+    assert "authSource=admin" in s.mongo_app_dsn
+    assert s.mongo_app_password is None
+
+
+def test_api_fields_from_env(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("NEXORA_API_PORT", "8091")
+    clean_env.setenv("NEXORA_API_BASE_URL", "http://mock-api:8000")
+    clean_env.setenv("NEXORA_API_DRIFT", "1")
+    clean_env.setenv("NEXORA_API_LIVE", "1")
+    clean_env.setenv("NEXORA_WEATHER_URL", "http://mock/weather")
+    clean_env.setenv("NEXORA_GEOCODING_URL", "http://mock/geocode")
+    clean_env.setenv("NEXORA_EXCHANGE_RATE_URL", "http://mock/fx")
+    clean_env.setenv("NEXORA_MONGO_APP_DSN", "mongodb://nexora_app@db:27017/?authSource=admin")
+    s = build_settings()
+    assert s.api_port == 8091
+    assert s.api_base_url == "http://mock-api:8000"
+    assert s.api_drift == 1
+    assert s.api_live == 1
+    assert s.weather_url == "http://mock/weather"
+    assert s.geocoding_url == "http://mock/geocode"
+    assert s.exchange_rate_url == "http://mock/fx"
+    assert s.mongo_app_dsn == "mongodb://nexora_app@db:27017/?authSource=admin"
+
+
+def test_api_token_is_secret(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("NEXORA_API_TOKEN", "token-de-prueba")
+    s = build_settings()
+    assert s.api_token is not None
+    assert s.api_token.get_secret_value() == "token-de-prueba"
+    assert "token-de-prueba" not in repr(s)
+
+
+def test_mongo_app_password_is_secret(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("MONGO_APP_PASSWORD", "clave-de-prueba")
+    s = build_settings()
+    assert s.mongo_app_password is not None
+    assert s.mongo_app_password.get_secret_value() == "clave-de-prueba"
+    assert "clave-de-prueba" not in repr(s)
