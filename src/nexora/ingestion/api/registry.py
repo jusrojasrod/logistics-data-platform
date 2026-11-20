@@ -167,10 +167,14 @@ def runs_statement(schema: str = META_SCHEMA) -> sql.Composed:
 class RunRegistry:
     """Registro de datasets y ejecuciones; implementa ``RunStatusWriter``.
 
-    La conexión la aporta el llamador, que controla la transacción. El contexto
-    común de la ejecución (origen, inicio, páginas y documentos) se fija al
-    construir el registro para que ``mark_blocked`` pueda completar la misma fila
-    sin cambiar la firma del enganche de drift.
+    La conexión la aporta el llamador. Cada escritura del estado se confirma al
+    terminar: el runner abre una transacción, así que sin el ``commit`` el estado
+    ``blocked`` (y el ``failed`` del camino de error) desaparecería con el
+    ``rollback`` que provoca la excepción que se propaga después. Con una
+    conexión en autocommit no hay transacción que confirmar y el ``commit`` se
+    omite. El contexto común de la ejecución (origen, inicio, páginas y
+    documentos) se fija al construir el registro para que ``mark_blocked`` pueda
+    completar la misma fila sin cambiar la firma del enganche de drift.
     """
 
     def __init__(
@@ -195,6 +199,20 @@ class RunRegistry:
         self.connection.execute(create_datasets_statement(self.schema))
         self.connection.execute(create_runs_statement(self.schema))
 
+    def _commit(self) -> None:
+        """Confirma lo escrito cuando la conexión no está en autocommit.
+
+        El runner trabaja dentro de una transacción y la excepción que se
+        propaga después haría ``rollback``: el estado tiene que quedar
+        confirmado antes. Las conexiones en autocommit (el fixture de
+        integración) ya han confirmado cada sentencia y no necesitan ``commit``.
+        """
+        if getattr(self.connection, "autocommit", True):
+            return
+        commit = getattr(self.connection, "commit", None)
+        if commit is not None:
+            commit()
+
     def upsert_datasets(self, *, updated_at: datetime | None = None) -> int:
         """Siembra o actualiza los seis datasets y devuelve cuántos se escribieron."""
         timestamp = updated_at or _utc_now()
@@ -211,6 +229,7 @@ class RunRegistry:
                     timestamp,
                 ),
             )
+        self._commit()
         return len(DATASETS)
 
     def record_run(
@@ -247,6 +266,7 @@ class RunRegistry:
                 error_detail,
             ),
         )
+        self._commit()
 
     def mark_blocked(self, *, run_id: str, dataset_name: str, drift_count: int) -> None:
         """Enganche de DQ-008: deja ``meta.api_runs`` en ``blocked`` con el conteo."""

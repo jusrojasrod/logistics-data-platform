@@ -12,6 +12,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
+import psycopg
 import pytest
 from psycopg import sql
 from pymongo.errors import DuplicateKeyError, WriteError
@@ -331,6 +332,63 @@ def test_drift_lands_records_blocks_then_raises(
     assert stored[1] == 1
     assert stored[2] == "ApiSchemaDriftError"
     assert stored[3] == SOURCE
+
+
+def _transactional_connection(pg: Any) -> psycopg.Connection:
+    """Conexión con transacción abierta, como la que abre el runner real."""
+    parameters = pg.info.get_parameters()
+    parameters.pop("autocommit", None)
+    parameters["password"] = pg.info.password
+    connection = psycopg.connect(**parameters)
+    assert connection.autocommit is False
+    return connection
+
+
+def test_blocked_state_and_drift_survive_the_runner_transaction(
+    pg: Any, schemas: Any, mongo_api_collections: Any
+) -> None:
+    """Regresión: el estado ``blocked`` y el drift sobreviven al rollback.
+
+    Sin el ``commit`` de ``RunRegistry``, la fila ``blocked`` y el DDL de las
+    tablas quedarían en la transacción abierta y la excepción que se propaga
+    después las borraría al cerrar la conexión.
+    """
+    item = _contract_item()
+    item.pop("ordered_weight_kg")
+
+    connection = _transactional_connection(pg)
+    try:
+        registry = RunRegistry(
+            connection, schema=schemas.meta, started_at=TIMESTAMP, pages=1, documents=1
+        )
+        registry.ensure_tables()
+        registry.upsert_datasets(updated_at=TIMESTAMP)
+        with pytest.raises(ApiSchemaDriftError):
+            land_and_flag_drift(
+                mongo_api_collections.payloads,
+                mongo_api_collections.drift,
+                [_page(items=[item])],
+                SHIPMENTS_CONTRACT,
+                run_id=RUN,
+                source_system=SOURCE,
+                registry=registry,
+                clock=lambda: TIMESTAMP,
+            )
+    finally:
+        connection.close()
+
+    with _transactional_connection(pg) as fresh:
+        stored = fresh.execute(
+            sql.SQL(
+                "select status, drift_count, error_class from {table} "
+                "where run_id = %s and dataset_name = %s"
+            ).format(table=sql.Identifier(schemas.meta, "api_runs")),
+            (RUN, "tms_shipments"),
+        ).fetchone()
+
+    assert stored == (STATUS_BLOCKED, 1, "ApiSchemaDriftError")
+    assert mongo_api_collections.drift.count_documents({"run_id": RUN}) == 1
+    assert mongo_api_collections.payloads.count_documents({"run_id": RUN}) == 1
 
 
 def test_temporary_collections_stay_outside_production_databases(
