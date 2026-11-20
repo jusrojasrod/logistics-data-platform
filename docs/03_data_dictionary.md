@@ -1062,3 +1062,135 @@ where f.shipment_id = '<id>';
 ```
 
 Un envío con `customer_key` o `route_key` nulo no casa con `using`, porque `NULL` no es igual a `NULL`; en ese caso se une con `is not distinct from` en las tres columnas.
+
+## 11. Ingesta por API
+
+La vía API aterriza el JSON crudo sin transformar en MongoDB y registra la ejecución en PostgreSQL. Es append-only e idempotente por ejecución: repetir un `run_id` con la misma clave no añade ni reescribe, y otra ejecución del mismo rango aterriza sus documentos aunque el contenido coincida. No se deduplica por contenido: la normalización, la cuarentena y el grano analítico de cada entidad son de una etapa posterior. `dag_ingest_apis` corre cada hora con una tarea por fuente (§11.4).
+
+### 11.1 Colecciones y metadatos
+
+El usuario de aplicación `nexora_app` tiene `readWrite` solo en las bases `raw` y `meta`; el root queda para administración (§11.5).
+
+| Colección | Grano | Campos propios | Índices |
+|---|---|---|---|
+| `raw.api_payloads` | Un documento por página recibida de un recurso en una ejecución (`run_id`, `endpoint`, `page`) | `payload` (JSON recibido, sin transformar), `content_type`, `http_status` | Único `uniq_run_endpoint_page (run_id, endpoint, page)`; `idx_payload_sha256 (payload_sha256)`; `idx_source_ingested_at (source_system, ingested_at)` |
+| `meta.api_schema_drift` | Una fila por payload alterado y campo | `field`, `change_type`, `expected_type`, `actual_type`, `source_key`, `rule_id`, `severity`, `detected_at` | Solo el validador de metadatos |
+
+Ambas colecciones exigen los seis metadatos obligatorios, sin nulos:
+
+| Metadato | Tipo en MongoDB | Descripción |
+|---|---|---|
+| `run_id` | `string` | Identificador de la ejecución; el runner lo genera por dataset |
+| `source_system` | `string` | `tms`, `weather`, `geocoding` o `exchange_rate` |
+| `endpoint` | `string` | Recurso consultado, por ejemplo `/v1/shipments` |
+| `page` | `int` | Número de página, desde 1 |
+| `payload_sha256` | `string` | SHA-256 en hexadecimal de los bytes recibidos |
+| `ingested_at` | `date` | Instante UTC del aterrizaje; en el registro de drift coincide con `detected_at` |
+
+`payload_sha256` se calcula sobre los bytes recibidos, no sobre una reserialización. Si la clave `(run_id, endpoint, page)` existe con el mismo hash, la página no se escribe; si existe con otro hash, falla con `PayloadRewriteError` en lugar de reescribir. Una clave nueva se inserta siempre, aunque su hash ya exista en otro `run_id`. `source_key` guarda la clave natural del elemento alterado para ubicar el registro de drift.
+
+### 11.2 Contrato de los recursos
+
+Los tres recursos de `tms` comparten el sobre de paginación `{"data": [...], "page", "page_size", "total_pages", "next_page"}`: `page` empieza en 1, `page_size` por defecto es 200 y como máximo 1000, y el recorrido termina cuando `next_page` es nulo. En el JSON, los enteros son `integer`, los decimales `number`, las fechas `YYYY-MM-DD` (`date`), las marcas ISO 8601 en UTC con sufijo `Z` (`timestamp`) y los nulos del origen se serializan como `null`. Un campo nulable del contrato admite `null`; si aparece con otro tipo cuenta como drift (§11.3).
+
+| Recurso | Endpoint | Dataset | Clave natural |
+|---|---|---|---|
+| `shipments` | `/v1/shipments` | `tms_shipments` | `shipment_id` |
+| `shipment_events` | `/v1/shipment_events` | `tms_shipment_events` | `event_id` |
+| `carrier_incidents` | `/v1/carrier_incidents` | `tms_carrier_incidents` | `incident_id` |
+
+Campos de `shipments` (los de la tabla `raw.shipments`, §2.3, con sus tipos JSON):
+
+| Campo | Tipo | Campo | Tipo |
+|---|---|---|---|
+| `shipment_id` | `string` | `delivered_at` | `timestamp`, nulable |
+| `customer_id` | `string`, nulable | `ordered_qty` | `integer` |
+| `carrier_id` | `string`, nulable | `delivered_qty` | `integer`, nulable |
+| `route_id` | `string` | `ordered_weight_kg` | `number` |
+| `service_type_id` | `string` | `delivered_weight_kg` | `number`, nulable |
+| `pickup_ts` | `timestamp` | `definitive_failure_flag` | `boolean` |
+| `pickup_date` | `date` | `promised_delivery_ts` | `timestamp`, nulable |
+| `picked_up_at` | `timestamp` | | |
+
+Campos de `shipment_events`:
+
+| Campo | Tipo |
+|---|---|
+| `event_id` | `string` |
+| `shipment_id` | `string` |
+| `event_ts` | `timestamp` |
+| `event_type` | `string`, nulable |
+| `location_city` | `string`, nulable |
+| `latitude` | `number` |
+| `longitude` | `number` |
+| `severity` | `string` |
+
+Campos de `carrier_incidents`:
+
+| Campo | Tipo | Campo | Tipo |
+|---|---|---|---|
+| `incident_id` | `string` | `damage_flag` | `boolean` |
+| `shipment_id` | `string` | `claim_amount` | `number`, nulable |
+| `carrier_id` | `string` | `currency_code` | `string` |
+| `incident_type` | `string` | `reported_ts` | `timestamp` |
+| `severity` | `string` | `responded_ts` | `timestamp` |
+| `resolved_ts` | `timestamp`, nulable | | |
+
+Las tres fuentes externas no recuperan paginación del proveedor: el runner envuelve cada payload simulado en el mismo sobre de paginación, con `data` de un elemento por página. Los payloads son deterministas por `sha256` de la fuente y de la ciudad o la fecha, con caché en disco (clima 60 min, geocodificación sin caducidad, TRM 24 h):
+
+| Dataset | Endpoint | Elementos | Campos del payload |
+|---|---|---|---|
+| `weather_api` | `/v1/weather` | Las 18 ciudades del catálogo | `source`, `city`, `date`, `observed_at`, `temperature_c`, `humidity_pct`, `wind_speed_ms`, `condition` |
+| `geocoding_api` | `/v1/geocoding` | Las 18 ciudades del catálogo | `source`, `city`, `region`, `latitude`, `longitude` |
+| `exchange_rate_api` | `/v1/exchange_rate` | Una fecha | `source`, `date`, `base` (`USD`), `quote` (`COP`), `rate` |
+
+La TRM se aterriza como payload; la conversión de moneda y su persistencia no forman parte de este corte.
+
+### 11.3 Drift y regla DQ-008
+
+El detector compara cada elemento del payload con el contrato del recurso. Registra una fila por campo alterado en `meta.api_schema_drift` con estos campos propios:
+
+| Campo | Descripción |
+|---|---|
+| `field` | Campo añadido, ausente o retipado |
+| `change_type` | `added` (fuera del contrato), `removed` (del contrato y ausente) o `retyped` (tipo observado distinto del declarado) |
+| `expected_type` / `actual_type` | Tipos declarado y observado; en `added`, `expected_type` es vacío |
+| `source_key` | Clave natural del elemento afectado |
+| `rule_id` | `DQ-008` |
+| `severity` | `blocking` |
+| `detected_at` | Instante de la detección, igual que `ingested_at` |
+
+El orden es el de la regla: primero se aterriza el payload, después se escriben las filas de drift, luego `meta.api_runs` queda en `blocked` y solo al final se propaga `ApiSchemaDriftError`, que falla la tarea y sirve de alerta. El payload crudo se conserva. La activación del mock con `NEXORA_API_DRIFT=1` está en [`07_runbook.md`](07_runbook.md) §4.4.
+
+### 11.4 Registro en PostgreSQL y frescura
+
+El registro crea estas dos tablas en `meta` en la primera ejecución, con el usuario que ejecuta la ingesta. No hay reglas DQ nuevas: la frescura es DQ-006b y el drift es DQ-008.
+
+`meta.datasets`: una fila por fuente de API, sembrada por upsert en cada ejecución.
+
+| Columna | Descripción |
+|---|---|
+| `dataset_name` | Clave primaria: `tms_shipments`, `tms_shipment_events`, `tms_carrier_incidents`, `weather_api`, `geocoding_api`, `exchange_rate_api` |
+| `source_system` | `tms`, `weather`, `geocoding` o `exchange_rate` |
+| `tier` | `api` |
+| `freshness_slo_minutes` | `120` para las seis fuentes (T1) |
+| `description` | Descripción de la fuente |
+| `updated_at` | Última siembra, en UTC |
+
+`meta.api_runs`: una fila por fuente y ejecución. Clave primaria `(run_id, dataset_name)`, con `dataset_name` referenciado a `meta.datasets`.
+
+| Columna | Descripción |
+|---|---|
+| `run_id` / `dataset_name` | Clave primaria de la ejecución |
+| `source_system` | Origen de la fuente |
+| `started_at` / `finished_at` | Instantes UTC de inicio y fin |
+| `status` | `ok`, `failed` o `blocked` |
+| `pages` / `documents` | Páginas aterrizadas y elementos del payload |
+| `drift_count` | Cambios de esquema de la ejecución; `0` por defecto |
+| `error_class` / `error_detail` | Clase y detalle del error, si lo hay |
+
+La frescura de cada dataset es `now() - max(ingested_at)` de su `endpoint` en `raw.api_payloads`, en minutos, y se compara con `freshness_slo_minutes` de `meta.datasets`. La consulta canónica está en `python -m nexora.ingestion.api.cli freshness`, que imprime una línea por dataset con sus minutos y su SLO. El mismo CLI expone `extract` para una fuente y `verify-keys` para contrastar las claves naturales de los tres recursos de `tms` con su tabla de origen; `verify-keys` falla si esa tabla está vacía, en lugar de comparar `0 = 0`.
+
+### 11.5 Acceso y secretos
+
+El cliente, el runner y la CLI se conectan a MongoDB con `NEXORA_MONGO_APP_DSN` (usuario `nexora_app`, `authSource=admin`) y a PostgreSQL con `NEXORA_PG_DSN`. El mock exige `NEXORA_API_TOKEN` para servir `/v1/*` y deja `/health` sin token para el healthcheck. El token, su rotación y el usuario de aplicación están descritos en [`05_governance_policy.md`](05_governance_policy.md) §10.
