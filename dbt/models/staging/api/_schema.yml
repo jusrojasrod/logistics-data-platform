@@ -1,9 +1,11 @@
 version: 2
 
-# Modelos base de staging de la vía API. Los seis metadatos y la clave natural
-# son NOT NULL en la tabla de exposición, así que sus tests genéricos son
-# seguros. La unicidad compuesta y la clasificación de calidad viven en los
-# modelos validados y en los tests singulares de etapas posteriores.
+# Modelos de staging de la vía API. Los seis metadatos y la clave natural son
+# NOT NULL en la tabla de exposición, así que sus tests genéricos son seguros en
+# los nueve modelos. La clasificación de calidad vive en los modelos validados.
+# La unicidad compuesta y la partición se comprueban en tests singulares: la
+# clave natural se repite entre run_id y no admite un test unique de columna
+# simple.
 
 models:
   - name: stg_api__shipments
@@ -82,6 +84,214 @@ models:
     columns:
       - name: incident_id
         description: "Clave natural de la incidencia."
+        data_tests:
+          - not_null
+      - name: run_id
+        description: "Identificador de la ejecución de ingesta."
+        data_tests:
+          - not_null
+      - name: source_system
+        description: "Sistema de origen declarado por el conector."
+        data_tests:
+          - not_null
+      - name: endpoint
+        description: "Recurso paginado de origen."
+        data_tests:
+          - not_null
+      - name: page
+        description: "Número de página del sobre aterrizado."
+        data_tests:
+          - not_null
+      - name: payload_sha256
+        description: "SHA-256 del contenido del sobre pageado."
+        data_tests:
+          - not_null
+      - name: ingested_at
+        description: "Momento de aterrizaje del sobre en MongoDB."
+        data_tests:
+          - not_null
+
+  - name: stg_api__shipments_validated
+    description: >
+      Envíos de la vía API con dq_errors ordenados por prioridad DQ-001, DQ-002
+      y DQ-008, dq_primary_rule e is_valid. Una fila por elemento de
+      raw.api_items del dataset tms_shipments.
+    columns:
+      - name: shipment_id
+        description: "Clave natural del envío."
+        data_tests:
+          - not_null
+      - name: run_id
+        description: "Identificador de la ejecución de ingesta."
+        data_tests:
+          - not_null
+      - name: source_system
+        description: "Sistema de origen declarado por el conector."
+        data_tests:
+          - not_null
+      - name: endpoint
+        description: "Recurso paginado de origen."
+        data_tests:
+          - not_null
+      - name: page
+        description: "Número de página del sobre aterrizado."
+        data_tests:
+          - not_null
+      - name: payload_sha256
+        description: "SHA-256 del contenido del sobre pageado."
+        data_tests:
+          - not_null
+      - name: ingested_at
+        description: "Momento de aterrizaje del sobre en MongoDB."
+        data_tests:
+          - not_null
+
+  - name: stg_api__shipments_valid
+    description: >
+      Envíos válidos de la vía API: filas sin reglas incumplidas. Una fila por
+      shipment_id dentro de run_id + dataset; entran en la capa de core.
+    columns:
+      - name: shipment_id
+        description: "Clave natural del envío válido."
+        data_tests:
+          - not_null
+      - name: run_id
+        description: "Identificador de la ejecución de ingesta."
+        data_tests:
+          - not_null
+      - name: source_system
+        description: "Sistema de origen declarado por el conector."
+        data_tests:
+          - not_null
+      - name: endpoint
+        description: "Recurso paginado de origen."
+        data_tests:
+          - not_null
+      - name: page
+        description: "Número de página del sobre aterrizado."
+        data_tests:
+          - not_null
+      - name: payload_sha256
+        description: "SHA-256 del contenido del sobre pageado."
+        data_tests:
+          - not_null
+      - name: ingested_at
+        description: "Momento de aterrizaje del sobre en MongoDB."
+        data_tests:
+          - not_null
+
+  - name: stg_api__shipment_events_validated
+    description: >
+      Eventos de envío de la vía API con dq_errors ordenados por prioridad
+      DQ-001 y DQ-008, dq_primary_rule e is_valid. Una fila por elemento de
+      raw.api_items del dataset tms_shipment_events.
+    columns:
+      - name: event_id
+        description: "Clave natural del evento."
+        data_tests:
+          - not_null
+      - name: run_id
+        description: "Identificador de la ejecución de ingesta."
+        data_tests:
+          - not_null
+      - name: source_system
+        description: "Sistema de origen declarado por el conector."
+        data_tests:
+          - not_null
+      - name: endpoint
+        description: "Recurso paginado de origen."
+        data_tests:
+          - not_null
+      - name: page
+        description: "Número de página del sobre aterrizado."
+        data_tests:
+          - not_null
+      - name: payload_sha256
+        description: "SHA-256 del contenido del sobre pageado."
+        data_tests:
+          - not_null
+      - name: ingested_at
+        description: "Momento de aterrizaje del sobre en MongoDB."
+        data_tests:
+          - not_null
+
+  - name: stg_api__shipment_events_valid
+    description: >
+      Eventos de envío válidos de la vía API: filas sin reglas incumplidas. Una
+      fila por event_id dentro de run_id + dataset; entran en la capa de core.
+    columns:
+      - name: event_id
+        description: "Clave natural del evento válido."
+        data_tests:
+          - not_null
+      - name: run_id
+        description: "Identificador de la ejecución de ingesta."
+        data_tests:
+          - not_null
+      - name: source_system
+        description: "Sistema de origen declarado por el conector."
+        data_tests:
+          - not_null
+      - name: endpoint
+        description: "Recurso paginado de origen."
+        data_tests:
+          - not_null
+      - name: page
+        description: "Número de página del sobre aterrizado."
+        data_tests:
+          - not_null
+      - name: payload_sha256
+        description: "SHA-256 del contenido del sobre pageado."
+        data_tests:
+          - not_null
+      - name: ingested_at
+        description: "Momento de aterrizaje del sobre en MongoDB."
+        data_tests:
+          - not_null
+
+  - name: stg_api__carrier_incidents_validated
+    description: >
+      Incidencias de transportista de la vía API con dq_errors ordenados por
+      prioridad DQ-001 y DQ-008, dq_primary_rule e is_valid. Una fila por
+      elemento de raw.api_items del dataset tms_carrier_incidents.
+    columns:
+      - name: incident_id
+        description: "Clave natural de la incidencia."
+        data_tests:
+          - not_null
+      - name: run_id
+        description: "Identificador de la ejecución de ingesta."
+        data_tests:
+          - not_null
+      - name: source_system
+        description: "Sistema de origen declarado por el conector."
+        data_tests:
+          - not_null
+      - name: endpoint
+        description: "Recurso paginado de origen."
+        data_tests:
+          - not_null
+      - name: page
+        description: "Número de página del sobre aterrizado."
+        data_tests:
+          - not_null
+      - name: payload_sha256
+        description: "SHA-256 del contenido del sobre pageado."
+        data_tests:
+          - not_null
+      - name: ingested_at
+        description: "Momento de aterrizaje del sobre en MongoDB."
+        data_tests:
+          - not_null
+
+  - name: stg_api__carrier_incidents_valid
+    description: >
+      Incidencias de transportista válidas de la vía API: filas sin reglas
+      incumplidas. Una fila por incident_id dentro de run_id + dataset; entran
+      en la capa de core.
+    columns:
+      - name: incident_id
+        description: "Clave natural de la incidencia válida."
         data_tests:
           - not_null
       - name: run_id
