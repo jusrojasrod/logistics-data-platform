@@ -20,6 +20,11 @@ x-airflow-common: &airflow-common
     NEXORA_MONGO_DSN: mongodb://nexora:${MONGO_INITDB_ROOT_PASSWORD:-change-me}@mongo:27017
     NEXORA_DATA_DIR: /opt/airflow/data
     NEXORA_SCALE: ${NEXORA_SCALE:-demo}
+    NEXORA_API_BASE_URL: http://mock-api:8000
+    NEXORA_API_TOKEN: ${NEXORA_API_TOKEN:-change-me}
+    NEXORA_MONGO_APP_DSN: mongodb://nexora_app:${MONGO_APP_PASSWORD:-change-me}@mongo:27017/?authSource=admin
+    # La caché de fuentes externas no puede vivir en ./data, que se monta de solo lectura.
+    NEXORA_API_CACHE_DIR: /opt/airflow/api_cache
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/plugins:/opt/airflow/plugins
@@ -77,10 +82,12 @@ services:
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-nexora}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:-change-me}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:-change-me}
     ports:
       - "127.0.0.1:${MONGO_PORT:-27017}:27017"
     volumes:
       - mongodata:/data/db
+      - ./infra/mongo/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test:
         [
@@ -91,6 +98,38 @@ services:
       timeout: 5s
       retries: 20
     mem_limit: 768m
+    restart: unless-stopped
+
+  mock-api:
+    build:
+      context: .
+      dockerfile: infra/api/Dockerfile
+    image: nexora/mock-api:0.1.0
+    container_name: nexora-mock-api
+    environment:
+      NEXORA_PG_DSN: postgresql://etl_writer:${ETL_WRITER_PASSWORD:-etl_writer_dev}@postgres:5432/nexora
+      NEXORA_MONGO_APP_DSN: mongodb://nexora_app:${MONGO_APP_PASSWORD:-change-me}@mongo:27017/?authSource=admin
+      NEXORA_API_TOKEN: ${NEXORA_API_TOKEN:-change-me}
+      NEXORA_API_DRIFT: ${NEXORA_API_DRIFT:-0}
+      NEXORA_API_BASE_URL: http://mock-api:8000
+    ports:
+      - "127.0.0.1:${NEXORA_API_PORT:-8090}:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    mem_limit: 256m
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   airflow-init:

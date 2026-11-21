@@ -5,7 +5,7 @@
 ```text
 ┌────────────────────────────────────────────────────────────────────────────┐
 │ FUENTES                                                                    │
-│  TMS (OLTP)   ERP (CSV)   CRM (Excel)   GPS (JSON)   APIs externas         │
+│  TMS (OLTP)   ERP (CSV)   CRM (CSV)   GPS (JSON)   APIs externas           │
 └───────────────────────────────┬────────────────────────────────────────────┘
                                 │
                                 ▼
@@ -53,6 +53,8 @@ Orquestación: Apache Airflow 3. Transformación: dbt. Todo corre en contenedore
 generador ─► CSV TMS ─► publicador (tms_writer) ─► tms.<tabla> ─► conector por watermark (etl_writer) ─► raw.<tabla>
 generador ─► CSV ERP y CRM ─────────────────────────────────────► conector por hash (etl_writer) ──────► raw.<tabla>
 generador ─► late/<tabla>_late.csv (ERP y CRM) ─────────────────► conector por hash, segunda carga ────► raw.<tabla>
+mock TMS API ─► /v1/<recurso> (token Bearer) ─► cliente HTTP (reintento, Retry-After, tasa) ─► MongoDB raw.api_payloads
+simuladores (clima, geocodificación, TRM) ───► payload crudo ──────────────────────────────► MongoDB raw.api_payloads
 
 CSV TMS:     carriers, routes, service_types, shipments, vehicles, drivers, trips, trip_legs,
              shipment_legs, shipment_stops, shipment_events, fuel_transactions,
@@ -61,6 +63,8 @@ CSV ERP:     customers, tariffs, invoices, invoice_lines, payments, carrier_sett
              shipment_costs
 CSV CRM:     contacts, contracts, leads
 Tardíos:     late/<tabla>_late.csv de las entidades ERP y CRM, salvo customers
+API TMS:     shipments, shipment_events, carrier_incidents (tres recursos paginados)
+API externa: weather_api, geocoding_api, exchange_rate_api (simuladas, con caché en disco)
 ```
 
 1. El generador escribe en flujo los CSV de cada perfil: envíos, dimensiones TMS, flota propia (`vehicles`, `drivers`), viajes y tramos (`trips`, `trip_legs`), envíos por tramo (`shipment_legs`), paradas (`shipment_stops`), eventos (`shipment_events`), combustible (`fuel_transactions`), ofertas (`carrier_tenders`) e incidencias (`carrier_incidents`), y los del ERP (`customers`, tarifas, facturas, líneas de factura, pagos, liquidaciones a transportadores y costos de flota) y del CRM (contactos, contratos y oportunidades). Cerca del 3 % de las filas de cada entidad ERP y CRM, salvo `customers`, va a `late/<tabla>_late.csv` según el hash de su clave natural, para simular archivos que llegan tarde. El publicador inserta las entidades TMS en el esquema `tms`, que simula la base operativa del TMS, por bloques y en el mismo orden en que se extraen: solo inserciones, con `updated_at` del reloj de la base en cada fila. El perfil `benchmark` solo se genera a archivos y no se publica.
@@ -74,17 +78,21 @@ Tardíos:     late/<tabla>_late.csv de las entidades ERP y CRM, salvo customers
 9. Superset consume `marts` con un usuario de solo lectura.
 10. La observabilidad monitorea frescura, volumen, fallos y SLA.
 
-El detalle de `tms`, de las dos vías de llegada a `raw` y de las tablas de `meta` está en [`03_data_dictionary.md`](03_data_dictionary.md) §1.1, §2.2 y §2.8.
+La vía API corre en paralelo a la batch. `dag_ingest_apis`, con calendario `0 * * * *` y pausado al crearse, delega en el runner de `src/nexora/ingestion/api/`: recorre los tres recursos paginados del mock TMS y produce los payloads de clima, geocodificación y tasa de cambio de los simuladores deterministas. El cliente HTTP autentica con token Bearer, reintenta con backoff exponencial (hasta 5 intentos), respeta `Retry-After` y un límite de tasa, valida el sobre de paginación con Pydantic y compara cada elemento con el contrato declarado. Cada payload se aterriza sin transformar en MongoDB `raw.api_payloads` con seis metadatos; el drift detectado se registra en `meta.api_schema_drift` con DQ-008, deja `meta.api_runs` en `blocked` y falla la tarea. La frescura de cada fuente es `now() - max(ingested_at)` sobre `raw.api_payloads`, comparada con el SLO de 120 min de `meta.datasets`.
+
+El detalle de `tms`, de las tres vías de llegada a `raw` y de las tablas de `meta` está en [`03_data_dictionary.md`](03_data_dictionary.md) §1.1, §2.2, §2.8 y §11. La operación de la vía API está en [`07_runbook.md`](07_runbook.md) §4.3 a §4.5.
 
 ## 4. Componentes
 
 | Componente | Responsabilidad | Dónde |
 |---|---|---|
-| Airflow | Orquestación, reintentos, SLA, alertas | `airflow/` |
+| Airflow | Orquestación, reintentos, SLA y alertas de `dag_ingest_batch` y `dag_ingest_apis` | `airflow/` |
 | dbt | Transformación, tests, linaje, snapshots | `dbt/` |
 | Python (`src/nexora`) | Generación, conectores, calidad, utilidades | `src/` |
-| PostgreSQL | OLTP simulado, warehouse y metadatos de BI | `infra/postgres/` |
-| MongoDB | Payloads JSON y telemetría | `docker-compose.yml` |
+| Mock TMS API | Tres recursos paginados con token Bearer, fallos 429/500 y drift deterministas | `src/nexora/generators/api/`, `infra/api/` |
+| Cliente HTTP de API | Autenticación, reintentos, límite de tasa, aterrizaje y simuladores de fuentes externas | `src/nexora/ingestion/api/` |
+| PostgreSQL | OLTP simulado, warehouse y metadatos de BI, con `meta.api_runs` y `meta.datasets` | `infra/postgres/` |
+| MongoDB | Payloads JSON crudos (`raw.api_payloads`), drift (`meta.api_schema_drift`) y telemetría | `docker-compose.yml`, `infra/mongo/init/` |
 | Superset | Dashboards, SQL Lab, RLS | `infra/superset/`, `dashboards/superset/` |
 | Cloudflare Tunnel | Exposición sin puertos abiertos | `infra/cloudflared/` |
 

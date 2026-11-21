@@ -5,7 +5,7 @@ SCALE ?= demo
 
 .DEFAULT_GOAL := help
 
-.PHONY: help up up-bi up-streaming down reset ps logs lint format test test-integration dbt-parse dbt-build data export-superset import-superset clean
+.PHONY: help up up-bi up-streaming api down reset ps logs lint format test test-integration dbt-parse dbt-build data export-superset import-superset clean
 
 help: ## Muestra esta ayuda
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -18,6 +18,9 @@ up-bi: ## Levanta core + BI (superset, redis)
 
 up-streaming: ## Levanta core + streaming (redpanda)
 	$(COMPOSE) -f docker-compose.yml -f docker-compose.streaming.yml up -d --wait
+
+api: ## Levanta solo el mock TMS API en 127.0.0.1:$NEXORA_API_PORT
+	$(COMPOSE) up -d --wait mock-api
 
 down: ## Detiene los servicios sin borrar volúmenes
 	$(COMPOSE) down
