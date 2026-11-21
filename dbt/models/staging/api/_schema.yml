@@ -1,0 +1,110 @@
+version: 2
+
+# Modelos base de staging de la vía API. Los seis metadatos y la clave natural
+# son NOT NULL en la tabla de exposición, así que sus tests genéricos son
+# seguros. La unicidad compuesta y la clasificación de calidad viven en los
+# modelos validados y en los tests singulares de etapas posteriores.
+
+models:
+  - name: stg_api__shipments
+    description: >
+      Envíos tipados desde SHIPMENTS_CONTRACT. Una fila por elemento de data[]
+      del recurso /v1/shipments, con metadatos, payload íntegro y copy_rank.
+    columns:
+      - name: shipment_id
+        description: "Clave natural del envío."
+        data_tests:
+          - not_null
+      - name: run_id
+        description: "Identificador de la ejecución de ingesta."
+        data_tests:
+          - not_null
+      - name: source_system
+        description: "Sistema de origen declarado por el conector."
+        data_tests:
+          - not_null
+      - name: endpoint
+        description: "Recurso paginado de origen."
+        data_tests:
+          - not_null
+      - name: page
+        description: "Número de página del sobre aterrizado."
+        data_tests:
+          - not_null
+      - name: payload_sha256
+        description: "SHA-256 del contenido del sobre pageado."
+        data_tests:
+          - not_null
+      - name: ingested_at
+        description: "Momento de aterrizaje del sobre en MongoDB."
+        data_tests:
+          - not_null
+
+  - name: stg_api__shipment_events
+    description: >
+      Eventos de envío tipados desde SHIPMENT_EVENTS_CONTRACT. Una fila por
+      elemento de data[] de /v1/shipment_events, con metadatos y copy_rank.
+    columns:
+      - name: event_id
+        description: "Clave natural del evento."
+        data_tests:
+          - not_null
+      - name: run_id
+        description: "Identificador de la ejecución de ingesta."
+        data_tests:
+          - not_null
+      - name: source_system
+        description: "Sistema de origen declarado por el conector."
+        data_tests:
+          - not_null
+      - name: endpoint
+        description: "Recurso paginado de origen."
+        data_tests:
+          - not_null
+      - name: page
+        description: "Número de página del sobre aterrizado."
+        data_tests:
+          - not_null
+      - name: payload_sha256
+        description: "SHA-256 del contenido del sobre pageado."
+        data_tests:
+          - not_null
+      - name: ingested_at
+        description: "Momento de aterrizaje del sobre en MongoDB."
+        data_tests:
+          - not_null
+
+  - name: stg_api__carrier_incidents
+    description: >
+      Incidencias de transportista tipadas desde CARRIER_INCIDENTS_CONTRACT.
+      Una fila por elemento de data[] de /v1/carrier_incidents, con metadatos
+      y copy_rank.
+    columns:
+      - name: incident_id
+        description: "Clave natural de la incidencia."
+        data_tests:
+          - not_null
+      - name: run_id
+        description: "Identificador de la ejecución de ingesta."
+        data_tests:
+          - not_null
+      - name: source_system
+        description: "Sistema de origen declarado por el conector."
+        data_tests:
+          - not_null
+      - name: endpoint
+        description: "Recurso paginado de origen."
+        data_tests:
+          - not_null
+      - name: page
+        description: "Número de página del sobre aterrizado."
+        data_tests:
+          - not_null
+      - name: payload_sha256
+        description: "SHA-256 del contenido del sobre pageado."
+        data_tests:
+          - not_null
+      - name: ingested_at
+        description: "Momento de aterrizaje del sobre en MongoDB."
+        data_tests:
+          - not_null

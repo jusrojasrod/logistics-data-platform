@@ -1,0 +1,42 @@
+version: 2
+
+# Fuente sobre la tabla de exposición de la vía API. No se declaran tests de
+# fuente: los elementos llegan íntegros y se clasifican en staging y cuarentena.
+
+sources:
+  - name: api
+    description: "Vía REST del TMS: elementos expandidos de los payloads paginados aterrizados en raw.api_items."
+    schema: raw
+    tables:
+      - name: api_items
+        description: >
+          Un elemento por fila de data[] con los seis metadatos de su página.
+          Grano (run_id, endpoint, page, item_index). Elemento sin transformar y
+          bandera de drift derivada de meta.api_schema_drift.
+        columns:
+          - name: run_id
+            description: "Identificador de la ejecución de ingesta de la vía API."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector (tms)."
+          - name: endpoint
+            description: "Recurso paginado de origen: /v1/shipments, /v1/shipment_events o /v1/carrier_incidents."
+          - name: page
+            description: "Número de página del sobre aterrizado."
+          - name: payload_sha256
+            description: "SHA-256 del contenido del sobre pageado."
+          - name: ingested_at
+            description: "Momento de aterrizaje del sobre en MongoDB."
+          - name: dataset_name
+            description: "Dataset del contrato, derivado del endpoint."
+          - name: source_key
+            description: "Valor de la clave natural del elemento (shipment_id, event_id o incident_id)."
+          - name: item_index
+            description: "Posición 0-based del elemento dentro de data[]."
+          - name: payload
+            description: "Elemento crudo del sobre, sin transformar."
+          - name: has_drift_flag
+            description: "Verdadero si el elemento tiene entradas en meta.api_schema_drift."
+          - name: drift_fields
+            description: "Campos con drift del elemento, como arreglo JSON."
+          - name: exposed_at
+            description: "Momento de la exposición del elemento en raw.api_items."
