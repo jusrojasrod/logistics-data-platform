@@ -1,0 +1,90 @@
+version: 2
+
+# Modelos de core de la vía API. Publican solo elementos válidos y sin drift
+# desde la capa de staging. El grano propio de cada modelo es una fila por
+# elemento válido con clave (run_id, endpoint, page, item_index): no es un
+# hecho canónico reservado a cortes posteriores. La unicidad compuesta se
+# comprueba en un test singular; aquí solo hay tests genéricos de columna
+# simple. Sin claves sustitutas, banderas de cálculo ni importes.
+
+models:
+  - name: core_api__shipments
+    description: >
+      Envíos válidos de la vía API. Grano: una fila por elemento válido con
+      clave (run_id, endpoint, page, item_index), desde la capa de staging.
+      Sin drift, sin claves sustitutas y sin importes.
+    columns:
+      - name: shipment_id
+        description: "Clave natural del envío válido."
+        data_tests:
+          - not_null
+      - name: run_id
+        description: "Identificador de la ejecución de ingesta; parte del grano."
+        data_tests:
+          - not_null
+      - name: endpoint
+        description: "Recurso paginado de origen; parte del grano."
+        data_tests:
+          - not_null
+      - name: page
+        description: "Número de página del sobre aterrizado; parte del grano."
+        data_tests:
+          - not_null
+      - name: item_index
+        description: "Posición del elemento en data[]; parte del grano."
+        data_tests:
+          - not_null
+
+  - name: core_api__shipment_events
+    description: >
+      Eventos de envío válidos de la vía API. Grano: una fila por elemento
+      válido con clave (run_id, endpoint, page, item_index), desde la capa de
+      staging. Sin drift, sin claves sustitutas y sin importes.
+    columns:
+      - name: event_id
+        description: "Clave natural del evento válido."
+        data_tests:
+          - not_null
+      - name: run_id
+        description: "Identificador de la ejecución de ingesta; parte del grano."
+        data_tests:
+          - not_null
+      - name: endpoint
+        description: "Recurso paginado de origen; parte del grano."
+        data_tests:
+          - not_null
+      - name: page
+        description: "Número de página del sobre aterrizado; parte del grano."
+        data_tests:
+          - not_null
+      - name: item_index
+        description: "Posición del elemento en data[]; parte del grano."
+        data_tests:
+          - not_null
+
+  - name: core_api__carrier_incidents
+    description: >
+      Incidencias de transportista válidas de la vía API. Grano: una fila por
+      elemento válido con clave (run_id, endpoint, page, item_index), desde la
+      capa de staging. Sin drift, sin claves sustitutas y sin importes.
+    columns:
+      - name: incident_id
+        description: "Clave natural de la incidencia válida."
+        data_tests:
+          - not_null
+      - name: run_id
+        description: "Identificador de la ejecución de ingesta; parte del grano."
+        data_tests:
+          - not_null
+      - name: endpoint
+        description: "Recurso paginado de origen; parte del grano."
+        data_tests:
+          - not_null
+      - name: page
+        description: "Número de página del sobre aterrizado; parte del grano."
+        data_tests:
+          - not_null
+      - name: item_index
+        description: "Posición del elemento en data[]; parte del grano."
+        data_tests:
+          - not_null
