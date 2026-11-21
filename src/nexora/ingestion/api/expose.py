@@ -193,8 +193,9 @@ class PostgresItemStore:
         values = [tuple(row[name] for name in ITEM_COLUMNS) for row in rows]
         if not values:
             return 0
-        cursor = self._connection.execute(insert_items_statement(self._names), values)
-        return int(cursor.rowcount)
+        with self._connection.cursor() as cursor:
+            cursor.executemany(insert_items_statement(self._names), values)
+            return int(cursor.rowcount)
 
     def counts_by_page(self, run_id: str) -> Mapping[tuple[str, int], int]:
         cursor = self._connection.execute(counts_by_page_statement(self._names), (run_id,))
