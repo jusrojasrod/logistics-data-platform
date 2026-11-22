@@ -1,0 +1,201 @@
+version: 2
+
+# Fuentes financieras del ERP sobre el esquema raw, aterrizadas por la ingesta
+# de archivos. No se redeclara la fuente `erp` (maestro de clientes), que ya
+# existe en staging/tms. No se declaran tests de fuente: la calidad se
+# clasifica en staging y cuarentena. Los defectos no se corrigen en raw.
+
+sources:
+  - name: erp_financial
+    description: "Sistema ERP: entidades financieras (tarifas, facturas, líneas, pagos, liquidaciones a carrier y costos de flota) cargadas en raw desde archivos identificados por hash."
+    schema: raw
+    tables:
+      - name: tariffs
+        description: "Tarifas vigentes por cliente, ruta y tipo de servicio."
+        columns:
+          - name: tariff_id
+            description: "Identificador natural de la tarifa."
+          - name: customer_id
+            description: "Cliente al que aplica la tarifa."
+          - name: route_id
+            description: "Ruta a la que aplica la tarifa."
+          - name: service_type_id
+            description: "Tipo de servicio al que aplica la tarifa."
+          - name: valid_from
+            description: "Inicio de vigencia de la tarifa (inclusive)."
+          - name: valid_to
+            description: "Fin de vigencia de la tarifa; nulo en la versión vigente."
+          - name: base_amount
+            description: "Importe base de la tarifa."
+          - name: per_km_amount
+            description: "Importe por kilómetro."
+          - name: fuel_surcharge_pct
+            description: "Porcentaje de recargo por combustible."
+          - name: currency_code
+            description: "Moneda de los importes (COP)."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Nombre del archivo cargado."
+          - name: source_file_hash
+            description: "SHA-256 del archivo cargado."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: invoices
+        description: "Cabeceras de factura emitidas por el ERP."
+        columns:
+          - name: invoice_id
+            description: "Identificador natural de la factura."
+          - name: customer_id
+            description: "Cliente facturado."
+          - name: shipment_id
+            description: "Envío facturado."
+          - name: invoice_date
+            description: "Fecha de emisión de la factura."
+          - name: due_date
+            description: "Fecha de vencimiento de la factura."
+          - name: invoice_status
+            description: "Estado de la factura."
+          - name: total_amount
+            description: "Importe total de la factura."
+          - name: currency_code
+            description: "Moneda de los importes (COP)."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Nombre del archivo cargado."
+          - name: source_file_hash
+            description: "SHA-256 del archivo cargado."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: invoice_lines
+        description: "Líneas de factura: detalle de conceptos facturados por envío."
+        columns:
+          - name: invoice_line_id
+            description: "Identificador natural de la línea de factura."
+          - name: invoice_id
+            description: "Factura a la que pertenece la línea."
+          - name: shipment_id
+            description: "Envío facturado en la línea."
+          - name: line_number
+            description: "Número de línea dentro de la factura."
+          - name: concept
+            description: "Concepto facturado."
+          - name: tariff_amount
+            description: "Importe calculado con la tarifa vigente en pickup_date."
+          - name: billed_revenue_amount
+            description: "Importe de ingresos facturados."
+          - name: tax_amount
+            description: "Importe de impuestos."
+          - name: currency_code
+            description: "Moneda de los importes (COP)."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Nombre del archivo cargado."
+          - name: source_file_hash
+            description: "SHA-256 del archivo cargado."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: payments
+        description: "Pagos recibidos de clientes, vinculados a facturas."
+        columns:
+          - name: payment_id
+            description: "Identificador natural del pago."
+          - name: invoice_id
+            description: "Factura a la que se aplica el pago."
+          - name: customer_id
+            description: "Cliente que realiza el pago."
+          - name: paid_date
+            description: "Fecha del pago."
+          - name: payment_amount
+            description: "Importe pagado."
+          - name: payment_method
+            description: "Método de pago."
+          - name: currency_code
+            description: "Moneda de los importes (COP)."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Nombre del archivo cargado."
+          - name: source_file_hash
+            description: "SHA-256 del archivo cargado."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: carrier_settlements
+        description: "Liquidaciones a transportistas por envío y concepto."
+        columns:
+          - name: settlement_line_id
+            description: "Identificador natural de la línea de liquidación."
+          - name: settlement_id
+            description: "Liquidación a la que pertenece la línea."
+          - name: shipment_id
+            description: "Envío liquidado."
+          - name: carrier_id
+            description: "Transportista liquidado."
+          - name: concept
+            description: "Concepto de la liquidación."
+          - name: settled_date
+            description: "Fecha de la liquidación."
+          - name: payable_amount
+            description: "Importe a pagar al transportista."
+          - name: deduction_amount
+            description: "Importe deducido."
+          - name: fuel_surcharge_amount
+            description: "Importe del recargo por combustible."
+          - name: settlement_status
+            description: "Estado de la liquidación."
+          - name: currency_code
+            description: "Moneda de los importes (COP)."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Nombre del archivo cargado."
+          - name: source_file_hash
+            description: "SHA-256 del archivo cargado."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: shipment_costs
+        description: "Costos de flota propia por envío y componente."
+        columns:
+          - name: shipment_cost_id
+            description: "Identificador natural del costo de envío."
+          - name: shipment_id
+            description: "Envío al que se imputa el costo."
+          - name: carrier_id
+            description: "Transportista asociado al costo, si aplica."
+          - name: cost_component
+            description: "Componente del costo."
+          - name: cost_date
+            description: "Fecha del costo."
+          - name: cost_amount
+            description: "Importe del costo."
+          - name: cost_center
+            description: "Centro de costos."
+          - name: currency_code
+            description: "Moneda de los importes (COP)."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Nombre del archivo cargado."
+          - name: source_file_hash
+            description: "SHA-256 del archivo cargado."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
