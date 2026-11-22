@@ -1,0 +1,51 @@
+version: 2
+
+# Esquema de tests de la dimensión de tarifas del corte financiero. No sustituye
+# ni modifica el _schema.yml existente de las dimensiones por lotes.
+
+models:
+  - name: dim_tariff
+    description: >
+      Dimensión de tarifas con historia (SCD2). Grano: una versión de tarifa,
+      identificada por tariff_key = md5(tariff_id || '|' || valid_from). Cada
+      versión lleva su vigencia: valid_from inclusive y valid_to exclusivo; la
+      versión vigente usa el centinela 9999-12-31 porque raw deja valid_to nulo.
+      is_current describe la versión, no se usa para atribuir historia.
+    columns:
+      - name: tariff_key
+        description: "Clave sustituta de la versión: md5(tariff_id || '|' || valid_from)."
+        data_tests:
+          - unique
+          - not_null
+      - name: tariff_id
+        description: "Identificador natural de la tarifa; se repite entre versiones."
+        data_tests:
+          - not_null
+      - name: valid_from
+        description: "Inicio de vigencia de la versión (inclusive); parte de la clave del grano."
+        data_tests:
+          - not_null
+      - name: valid_to
+        description: "Fin de vigencia (exclusivo); 9999-12-31 en la versión vigente."
+        data_tests:
+          - not_null
+      - name: is_current
+        description: "Indica si la versión es la vigente (valid_to nulo en el origen)."
+        data_tests:
+          - not_null
+      - name: currency_code
+        description: "Moneda de los importes de la tarifa (COP)."
+        data_tests:
+          - not_null
+      - name: customer_id
+        description: "Cliente al que aplica la tarifa; usado en el join point-in-time."
+        data_tests:
+          - not_null
+      - name: route_id
+        description: "Ruta a la que aplica la tarifa; usada en el join point-in-time."
+        data_tests:
+          - not_null
+      - name: service_type_id
+        description: "Tipo de servicio al que aplica la tarifa; usado en el join point-in-time."
+        data_tests:
+          - not_null
