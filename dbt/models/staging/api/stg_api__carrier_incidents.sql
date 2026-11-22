@@ -2,6 +2,8 @@
 -- dataset tms_carrier_incidents). Una fila por elemento de data[]; el payload
 -- crudo se conserva íntegro. Los duplicados de la clave natural dentro de un
 -- run_id se marcan con copy_rank para clasificarlos después. No se borra fila.
+-- Los valores no parseables en campos tipados pasan a NULL; el payload y
+-- has_drift_flag se conservan para que DQ-008 clasifique la fila después.
 
 with source as (
 
@@ -12,18 +14,15 @@ with source as (
 
 typed as (
 
+    -- Columnas simples primero y cálculos después; los valores no parseables
+    -- pasan a NULL sin perder el payload ni la bandera de drift.
     select
         cast(payload ->> 'incident_id' as text) as incident_id,
         cast(payload ->> 'shipment_id' as text) as shipment_id,
         cast(payload ->> 'carrier_id' as text) as carrier_id,
         cast(payload ->> 'incident_type' as text) as incident_type,
         cast(payload ->> 'severity' as text) as severity,
-        cast(payload ->> 'damage_flag' as boolean) as damage_flag,
-        cast(payload ->> 'claim_amount' as numeric) as claim_amount,
         cast(payload ->> 'currency_code' as text) as currency_code,
-        cast(payload ->> 'reported_ts' as timestamptz) as reported_ts,
-        cast(payload ->> 'responded_ts' as timestamptz) as responded_ts,
-        cast(payload ->> 'resolved_ts' as timestamptz) as resolved_ts,
         cast(run_id as text) as run_id,
         cast(source_system as text) as source_system,
         cast(endpoint as text) as endpoint,
@@ -36,7 +35,27 @@ typed as (
         payload,
         cast(has_drift_flag as boolean) as has_drift_flag,
         cast(drift_fields as jsonb) as drift_fields,
-        cast(exposed_at as timestamptz) as exposed_at
+        cast(exposed_at as timestamptz) as exposed_at,
+        case
+            when pg_input_is_valid(payload ->> 'reported_ts', 'timestamptz')
+                then cast(payload ->> 'reported_ts' as timestamptz)
+        end as reported_ts,
+        case
+            when pg_input_is_valid(payload ->> 'responded_ts', 'timestamptz')
+                then cast(payload ->> 'responded_ts' as timestamptz)
+        end as responded_ts,
+        case
+            when pg_input_is_valid(payload ->> 'resolved_ts', 'timestamptz')
+                then cast(payload ->> 'resolved_ts' as timestamptz)
+        end as resolved_ts,
+        case
+            when pg_input_is_valid(payload ->> 'damage_flag', 'boolean')
+                then cast(payload ->> 'damage_flag' as boolean)
+        end as damage_flag,
+        case
+            when pg_input_is_valid(payload ->> 'claim_amount', 'numeric')
+                then cast(payload ->> 'claim_amount' as numeric)
+        end as claim_amount
     from source
 
 ),

@@ -2,6 +2,8 @@
 -- tms_shipment_events). Una fila por elemento de data[]; el payload crudo se
 -- conserva íntegro. Los duplicados de la clave natural dentro de un run_id se
 -- marcan con copy_rank para clasificarlos después. No se borra ninguna fila.
+-- Los valores no parseables en campos tipados pasan a NULL; el payload y
+-- has_drift_flag se conservan para que DQ-008 clasifique la fila después.
 
 with source as (
 
@@ -12,14 +14,13 @@ with source as (
 
 typed as (
 
+    -- Columnas simples primero y cálculos después; los valores no parseables
+    -- pasan a NULL sin perder el payload ni la bandera de drift.
     select
         cast(payload ->> 'event_id' as text) as event_id,
         cast(payload ->> 'shipment_id' as text) as shipment_id,
-        cast(payload ->> 'event_ts' as timestamptz) as event_ts,
         cast(payload ->> 'event_type' as text) as event_type,
         cast(payload ->> 'location_city' as text) as location_city,
-        cast(payload ->> 'latitude' as numeric) as latitude,
-        cast(payload ->> 'longitude' as numeric) as longitude,
         cast(payload ->> 'severity' as text) as severity,
         cast(run_id as text) as run_id,
         cast(source_system as text) as source_system,
@@ -33,7 +34,19 @@ typed as (
         payload,
         cast(has_drift_flag as boolean) as has_drift_flag,
         cast(drift_fields as jsonb) as drift_fields,
-        cast(exposed_at as timestamptz) as exposed_at
+        cast(exposed_at as timestamptz) as exposed_at,
+        case
+            when pg_input_is_valid(payload ->> 'event_ts', 'timestamptz')
+                then cast(payload ->> 'event_ts' as timestamptz)
+        end as event_ts,
+        case
+            when pg_input_is_valid(payload ->> 'latitude', 'numeric')
+                then cast(payload ->> 'latitude' as numeric)
+        end as latitude,
+        case
+            when pg_input_is_valid(payload ->> 'longitude', 'numeric')
+                then cast(payload ->> 'longitude' as numeric)
+        end as longitude
     from source
 
 ),
