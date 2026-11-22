@@ -1,0 +1,198 @@
+version: 2
+
+# Esquema de tests de los hechos financieros del corte ERP. No sustituye ni
+# modifica el _schema.yml existente del hecho de envíos. Declara el grano de
+# cada hecho, la clave natural que lo identifica y las claves foráneas con
+# aviso: los hechos se construyen con unión interna a sus padres, de modo que
+# no hay huérfanos dentro de ellos, pero el aviso documenta la integridad
+# referencial si una carga futura rompiera ese supuesto.
+
+models:
+  - name: fact_invoices
+    description: >
+      Hecho de facturación. Grano: una fila por línea de factura válida
+      (invoice_line_id). La cabecera y el pago se integran en la propia línea,
+      sin hechos propios. Los ids naturales y las claves de las dimensiones
+      existentes se leen de fact_shipments; tariff_key se resuelve contra la
+      versión de tarifa vigente en pickup_date. Sin importes en el hecho de
+      envíos.
+    columns:
+      - name: invoice_line_id
+        description: "Identificador natural de la línea de factura; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: invoice_id
+        description: "Cabecera de la factura integrada en la línea; sin hecho propio."
+      - name: shipment_id
+        description: "Envío facturado; clave natural que enlaza con fact_shipments."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fact_shipments')
+                field: shipment_id
+              config:
+                severity: warn
+      - name: payment_id
+        description: "Pago opcional integrado en la línea; nulo en facturas emitidas."
+      - name: customer_key
+        description: "Clave sustituta del cliente; nula si customer_id llega nulo."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_key
+              config:
+                severity: warn
+      - name: carrier_key
+        description: "Clave sustituta del transportista; nula si carrier_id llega nulo."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_carrier')
+                field: carrier_key
+              config:
+                severity: warn
+      - name: route_key
+        description: "Clave sustituta de la ruta."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_route')
+                field: route_key
+              config:
+                severity: warn
+      - name: service_type_key
+        description: "Clave sustituta del tipo de servicio."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_service_type')
+                field: service_type_key
+              config:
+                severity: warn
+      - name: tariff_key
+        description: "Versión de tarifa vigente en pickup_date, resuelta por point-in-time."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_tariff')
+                field: tariff_key
+              config:
+                severity: warn
+
+  - name: fact_carrier_settlements
+    description: >
+      Hecho de liquidaciones a carrier. Grano: una fila por línea de
+      liquidación válida (settlement_line_id), es decir envío × carrier ×
+      concepto. Los ids naturales y las claves de dimensión se leen de la línea
+      de liquidación y de fact_shipments. Sin importes en el hecho de envíos.
+    columns:
+      - name: settlement_line_id
+        description: "Identificador natural de la línea de liquidación; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: shipment_id
+        description: "Envío liquidado; clave natural que enlaza con fact_shipments."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fact_shipments')
+                field: shipment_id
+              config:
+                severity: warn
+      - name: carrier_key
+        description: "Clave sustituta del transportista; nula si carrier_id no resuelve."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_carrier')
+                field: carrier_key
+              config:
+                severity: warn
+      - name: customer_key
+        description: "Clave sustituta del cliente leída de fact_shipments."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_key
+              config:
+                severity: warn
+      - name: route_key
+        description: "Clave sustituta de la ruta leída de fact_shipments."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_route')
+                field: route_key
+              config:
+                severity: warn
+      - name: service_type_key
+        description: "Clave sustituta del tipo de servicio leída de fact_shipments."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_service_type')
+                field: service_type_key
+              config:
+                severity: warn
+
+  - name: fact_shipment_costs
+    description: >
+      Hecho de costos de flota propia. Grano: una fila por costo válido
+      (shipment_cost_id), es decir envío × componente de costo. Los ids
+      naturales y las claves de dimensión se leen de la fila de costo y de
+      fact_shipments. Sin importes en el hecho de envíos.
+    columns:
+      - name: shipment_cost_id
+        description: "Identificador natural del costo de envío; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: shipment_id
+        description: "Envío al que se imputa el costo; clave natural contra fact_shipments."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fact_shipments')
+                field: shipment_id
+              config:
+                severity: warn
+      - name: carrier_key
+        description: "Clave sustituta del transportista; nula si carrier_id no resuelve."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_carrier')
+                field: carrier_key
+              config:
+                severity: warn
+      - name: customer_key
+        description: "Clave sustituta del cliente leída de fact_shipments."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_key
+              config:
+                severity: warn
+      - name: route_key
+        description: "Clave sustituta de la ruta leída de fact_shipments."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_route')
+                field: route_key
+              config:
+                severity: warn
+      - name: service_type_key
+        description: "Clave sustituta del tipo de servicio leída de fact_shipments."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_service_type')
+                field: service_type_key
+              config:
+                severity: warn
