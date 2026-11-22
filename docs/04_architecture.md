@@ -55,6 +55,8 @@ generador ─► CSV ERP y CRM ────────────────�
 generador ─► late/<tabla>_late.csv (ERP y CRM) ─────────────────► conector por hash, segunda carga ────► raw.<tabla>
 mock TMS API ─► /v1/<recurso> (token Bearer) ─► cliente HTTP (reintento, Retry-After, tasa) ─► MongoDB raw.api_payloads
 simuladores (clima, geocodificación, TRM) ───► payload crudo ──────────────────────────────► MongoDB raw.api_payloads
+MongoDB raw.api_payloads ─► exposición (expose.py) ─► raw.api_items ─► stg_api__* ─► core_api__*
+MongoDB meta.api_schema_drift ─► has_drift_flag ─► cuarentena.api_items / exclusión de core
 
 CSV TMS:     carriers, routes, service_types, shipments, vehicles, drivers, trips, trip_legs,
              shipment_legs, shipment_stops, shipment_events, fuel_transactions,
@@ -80,7 +82,9 @@ API externa: weather_api, geocoding_api, exchange_rate_api (simuladas, con cach�
 
 La vía API corre en paralelo a la batch. `dag_ingest_apis`, con calendario `0 * * * *` y pausado al crearse, delega en el runner de `src/nexora/ingestion/api/`: recorre los tres recursos paginados del mock TMS y produce los payloads de clima, geocodificación y tasa de cambio de los simuladores deterministas. El cliente HTTP autentica con token Bearer, reintenta con backoff exponencial (hasta 5 intentos), respeta `Retry-After` y un límite de tasa, valida el sobre de paginación con Pydantic y compara cada elemento con el contrato declarado. Cada payload se aterriza sin transformar en MongoDB `raw.api_payloads` con seis metadatos; el drift detectado se registra en `meta.api_schema_drift` con DQ-008, deja `meta.api_runs` en `blocked` y falla la tarea. La frescura de cada fuente es `now() - max(ingested_at)` sobre `raw.api_payloads`, comparada con el SLO de 120 min de `meta.datasets`.
 
-El detalle de `tms`, de las tres vías de llegada a `raw` y de las tablas de `meta` está en [`03_data_dictionary.md`](03_data_dictionary.md) §1.1, §2.2, §2.8 y §11. La operación de la vía API está en [`07_runbook.md`](07_runbook.md) §4.3 a §4.5.
+Sobre lo ya aterrizado corre el tramo de exposición → staging → core de la vía API, sin ejecutar ni despausar el DAG. El paso de exposición lee `raw.api_payloads` y `meta.api_schema_drift` en MongoDB y expande `data[]` a la tabla `raw.api_items` de PostgreSQL con los seis metadatos de página, el elemento crudo y la bandera de drift; es idempotente por `(run_id, endpoint, page, item_index)` y no modifica las colecciones de origen. Desde ahí, dbt tipa los tres recursos en `stg_api__*`, clasifica la calidad con DQ-001, DQ-002 y DQ-008, separa los rechazos en `quarantine.api_items` y publica los elementos válidos sin drift en los tres `core_api__*`. El drift queda trazable en staging y en cuarentena, pero no llega a `core`; la vía por lotes no se toca.
+
+El detalle de `tms`, de las tres vías de llegada a `raw` y de las tablas de `meta` está en [`03_data_dictionary.md`](03_data_dictionary.md) §1.1, §2.2, §2.8 y §11. La exposición, el linaje y los modelos de la vía API están en el mismo documento §12. La operación de la vía API está en [`07_runbook.md`](07_runbook.md) §4.3 a §4.5.
 
 ## 4. Componentes
 
@@ -91,6 +95,8 @@ El detalle de `tms`, de las tres vías de llegada a `raw` y de las tablas de `me
 | Python (`src/nexora`) | Generación, conectores, calidad, utilidades | `src/` |
 | Mock TMS API | Tres recursos paginados con token Bearer, fallos 429/500 y drift deterministas | `src/nexora/generators/api/`, `infra/api/` |
 | Cliente HTTP de API | Autenticación, reintentos, límite de tasa, aterrizaje y simuladores de fuentes externas | `src/nexora/ingestion/api/` |
+| Exposición de API a dbt | Expande `data[]` de `raw.api_payloads` a `raw.api_items` y deriva la bandera de drift desde `meta.api_schema_drift` | `src/nexora/ingestion/api/expose.py` |
+| Modelos dbt de la vía API | Staging `stg_api__*`, cuarentena `quarantine.api_items` y core `core_api__*` | `dbt/models/staging/api/`, `dbt/models/quarantine/`, `dbt/models/core/api/` |
 | PostgreSQL | OLTP simulado, warehouse y metadatos de BI, con `meta.api_runs` y `meta.datasets` | `infra/postgres/` |
 | MongoDB | Payloads JSON crudos (`raw.api_payloads`), drift (`meta.api_schema_drift`) y telemetría | `docker-compose.yml`, `infra/mongo/init/` |
 | Superset | Dashboards, SQL Lab, RLS | `infra/superset/`, `dashboards/superset/` |
@@ -99,6 +105,7 @@ El detalle de `tms`, de las tres vías de llegada a `raw` y de las tablas de `me
 ## 5. Decisiones de modelamiento
 
 - **Grano explícito** en cada hecho, declarado en `schema.yml` y en el diccionario.
+- **Grano propio de la vía API:** los modelos `core_api__*` declaran una fila por elemento válido con clave `(run_id, endpoint, page, item_index)`; no son hechos canónicos reservados a cortes posteriores ni sustituyen a los de la vía por lotes.
 - **Separación financiera:** ingreso, pago a carriers y costo de flota en hechos distintos.
 - **Tabla puente envío–viaje** para imputar kilómetros en vacío y costos.
 - **SCD2** con miembros inferidos para hechos que llegan antes que su dimensión.

@@ -1194,3 +1194,85 @@ La frescura de cada dataset es `now() - max(ingested_at)` de su `endpoint` en `r
 ### 11.5 Acceso y secretos
 
 El cliente, el runner y la CLI se conectan a MongoDB con `NEXORA_MONGO_APP_DSN` (usuario `nexora_app`, `authSource=admin`) y a PostgreSQL con `NEXORA_PG_DSN`. El mock exige `NEXORA_API_TOKEN` para servir `/v1/*` y deja `/health` sin token para el healthcheck. El token, su rotación y el usuario de aplicación están descritos en [`05_governance_policy.md`](05_governance_policy.md) §10.
+
+## 12. Exposición de la vía API a dbt
+
+La vía API aterriza los sobres paginados en MongoDB (§11) y los conserva sin transformar. Para que dbt pueda consumirlos, un paso de exposición en Python expande `data[]` a una tabla nueva de PostgreSQL. El paso no ejecuta ni despausa `dag_ingest_apis` y no modifica `raw.api_payloads` ni `meta.*`: solo lee esas colecciones y escribe en la tabla aditiva `raw.api_items`. Su operación contra la instancia principal es el único punto de escritura de este corte.
+
+### 12.1 Paso de exposición e idempotencia
+
+El módulo `python -m nexora.ingestion.api.expose` ofrece dos subcomandos: `expose --run-id <id>` expande los elementos de una ejecución y `verify --run-id <id>` compara, por `(endpoint, page)`, el número de elementos aterrizados en `raw.api_payloads` con el de filas expuestas. `verify` falla si la ejecución no tiene elementos, en lugar de comparar cero con cero. Los nombres de base, colección, esquema y tabla se inyectan por argumentos de línea de comandos o por variables de entorno `NEXORA_EXPOSE_*`; sin inyección, apuntan a `raw.api_payloads`, `meta.api_schema_drift` y `raw.api_items`. En la documentación de operación, `python -m nexora.ingestion.api.expose` designa el módulo; la invocación ejecutable lleva siempre el subcomando.
+
+Solo se exponen los tres recursos del contrato (`tms_shipments`, `tms_shipment_events` y `tms_carrier_incidents`, §11.2). La tabla se crea con `create table if not exists` y cada elemento se inserta con `insert … on conflict (run_id, endpoint, page, item_index) do nothing`: repetir un `run_id` no añade filas ni reescribe hashes, y el paso no emite `update` ni `delete`. `payload_sha256` e `ingested_at` se copian del sobre aterrizado; `exposed_at` se fija solo en la primera inserción.
+
+### 12.2 `raw.api_items`
+
+Grano: una fila por elemento de `data[]` de una página aterrizada, con los seis metadatos de esa página. Clave primaria `(run_id, endpoint, page, item_index)`; `item_index` es la posición 0-based del elemento dentro de `data[]` y distingue elementos repetidos en una misma página. Es un grano propio, distinto del de las entidades de §2: no agrega el sobre ni pierde la trazabilidad de la página.
+
+| Columna | Tipo | Nulabilidad | Descripción |
+|---|---|---|---|
+| `run_id` | `text` | `NOT NULL`, parte de la PK | Ejecución de la ingesta de la vía API; se copia del sobre |
+| `source_system` | `text` | `NOT NULL` | Sistema de origen del sobre (`tms` en los tres recursos) |
+| `endpoint` | `text` | `NOT NULL`, parte de la PK | Recurso paginado: `/v1/shipments`, `/v1/shipment_events` o `/v1/carrier_incidents` |
+| `page` | `integer` | `NOT NULL`, parte de la PK | Número de página del sobre aterrizado |
+| `payload_sha256` | `text` | `NOT NULL` | SHA-256 del contenido del sobre; se copia del documento |
+| `ingested_at` | `timestamptz` | `NOT NULL` | Instante de aterrizaje del sobre en MongoDB; se copia del documento |
+| `dataset_name` | `text` | `NOT NULL` | Dataset del contrato, derivado del `endpoint` |
+| `source_key` | `text` | `NOT NULL` | Valor de la clave natural del elemento (`shipment_id`, `event_id` o `incident_id`) |
+| `item_index` | `integer` | `NOT NULL`, parte de la PK | Posición 0-based del elemento en `data[]` |
+| `payload` | `jsonb` | `NOT NULL` | Elemento crudo del sobre, sin transformar |
+| `has_drift_flag` | `boolean` | `NOT NULL`, `false` por defecto | Verdadero si el elemento tiene entradas en `meta.api_schema_drift` |
+| `drift_fields` | `jsonb` | `NOT NULL`, `[]` por defecto | Arreglo de campos con drift del elemento |
+| `exposed_at` | `timestamptz` | `NOT NULL` | Instante de la exposición; solo se fija en la primera inserción |
+
+### 12.3 Bandera de drift
+
+`has_drift_flag` y `drift_fields` se derivan en el paso de exposición consultando `meta.api_schema_drift` por `(run_id, endpoint, page, source_key)`: un elemento con una o más entradas de drift queda marcado. La bandera es la proyección en PostgreSQL de la pertenencia del elemento a la colección de drift (§11.3); la colección solo se lee y el payload crudo se conserva. El drift detectado no llega a `core`: queda trazable en staging y en cuarentena con `DQ-008` (§12.6).
+
+### 12.4 Staging `stg_api__*`
+
+Tres modelos tipan los elementos de `raw.api_items` desde los contratos del módulo de contratos de la vía API (§11.2), sin borrar filas: `stg_api__shipments`, `stg_api__shipment_events` y `stg_api__carrier_incidents` (esquema `stg`, vistas). Cada uno filtra por `dataset_name`, conserva los seis metadatos, `dataset_name`, `source_key`, `item_index`, `payload` íntegro, `has_drift_flag`, `drift_fields` y `exposed_at`, y añade `copy_rank = row_number() over (partition by run_id, dataset_name, source_key order by ingested_at, item_index)`. Su grano es el mismo que el de `raw.api_items`.
+
+Cada modelo se clasifica en un par `_validated`/`_valid`: los `_validated` añaden `dq_errors`, `dq_primary_rule` e `is_valid`; los `_valid` conservan los campos del contrato y de trazabilidad sin las columnas de clasificación y solo pasan las filas `is_valid`.
+
+### 12.5 Reglas de calidad
+
+Sin reglas nuevas: siguen 17 (DQ-006b sigue siendo la frescura de `meta.datasets`, §11.4). Los modelos `_validated` aplican las reglas existentes en este orden de prioridad:
+
+| Regla | Condición de rechazo | Recursos |
+|---|---|---|
+| DQ-001 | Clave natural nula o `copy_rank > 1` | Los tres recursos |
+| DQ-002 | `delivered_at < picked_up_at`; si falta alguna fecha no incumple | Solo `shipments` |
+| DQ-008 | `has_drift_flag` | Los tres recursos |
+
+`dq_errors` conserva ese orden, `dq_primary_rule` es su primer elemento e `is_valid` es `true` cuando la lista está vacía. Una fila con drift y un duplicado lleva `dq_errors = {DQ-001,DQ-008}` y `dq_primary_rule = 'DQ-001'`.
+
+### 12.6 Cuarentena `quarantine.api_items`
+
+Una fila por elemento rechazado, no por regla incumplida. Reúne los tres recursos y emite las ocho columnas canónicas de cuarentena (§6):
+
+| Columna | Descripción |
+|---|---|
+| `quarantine_id` | `md5` de `run_id`, `dataset_name`, `source_key`, `item_index`, `page` y `copy_rank` |
+| `source_table` | `raw.api_items` |
+| `rule_id` | Regla principal, igual a `dq_primary_rule` |
+| `reason` | Regla principal y lista de todas las reglas incumplidas |
+| `payload` | Elemento original con metadatos, `dq_errors` y `dq_primary_rule` |
+| `detected_at` | Instante en que la construcción detectó el rechazo |
+| `run_id` | Ejecución que produjo el elemento rechazado |
+| `severity` | `blocking` si DQ-008 está en `dq_errors`; `high` en caso contrario |
+
+Junto con los tres `stg_api__*_valid` forma una partición exacta por `run_id`: cada elemento expuesto está en válidos o en cuarentena, nunca en ambos. `quarantine.shipments` (vía por lotes) no se modifica.
+
+### 12.7 Linaje y modelos `core_api__*`
+
+```text
+MongoDB raw.api_payloads ─► expose.py ─► raw.api_items ─► stg_api__* ─► stg_api__*_validated
+                                                                    ├─► stg_api__*_valid ─► core_api__*
+                                                                    └─► quarantine.api_items
+MongoDB meta.api_schema_drift ─► has_drift_flag / drift_fields ─────► (excluye de core_api__*)
+```
+
+Los tres modelos `core_api__shipments`, `core_api__shipment_events` y `core_api__carrier_incidents` (esquema `core`, tablas) publican solo elementos `is_valid` y sin drift. Declaran su propio grano —una fila por elemento válido con clave `(run_id, endpoint, page, item_index)`— en su `_schema.yml`: no son un hecho canónico reservado a cortes posteriores ni sustituyen a `core.fact_shipments` (§9.3). No llevan claves sustitutas, banderas de cálculo ni importes, y no se tocan los modelos de la vía por lotes.
+
+La partición, la unicidad del grano y la exclusión del drift se comprueban con los tests singulares `assert_api_items_partition`, `assert_api_grain` y `assert_api_drift_excluded_from_core`. El detalle del linaje completo está en §4 y la operación de la vía API en [`07_runbook.md`](07_runbook.md) §4.3 a §4.5.

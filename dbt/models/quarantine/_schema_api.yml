@@ -1,0 +1,52 @@
+version: 2
+
+# Cuarentena nueva de la vía API. No sustituye ni modifica la entrada de la
+# cuarentena de la vía por lotes.
+
+models:
+  - name: api_items
+    description: >
+      Elementos rechazados de raw.api_items. Una fila por elemento rechazado,
+      con la regla principal según la prioridad DQ-001 → DQ-002 → DQ-008, el
+      elemento original y sus metadatos en payload. Junto con los tres modelos
+      stg_api__*_valid forma una partición exacta por run_id.
+    columns:
+      - name: quarantine_id
+        description: >
+          md5 de run_id, dataset_name, source_key, item_index, page y copy_rank;
+          identifica el elemento rechazado.
+        data_tests:
+          - unique
+          - not_null
+      - name: source_table
+        description: "Tabla de exposición de origen del elemento rechazado (raw.api_items)."
+        data_tests:
+          - not_null
+      - name: rule_id
+        description: "Regla principal incumplida según la prioridad declarada."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["DQ-001", "DQ-002", "DQ-008"]
+      - name: reason
+        description: "Regla principal y lista de todas las reglas incumplidas."
+        data_tests:
+          - not_null
+      - name: payload
+        description: "Elemento original en jsonb, con metadatos, dq_errors y dq_primary_rule."
+        data_tests:
+          - not_null
+      - name: detected_at
+        description: "Momento en que la construcción del modelo detectó el rechazo."
+      - name: run_id
+        description: "Ejecución de la vía API que produjo el elemento rechazado."
+        data_tests:
+          - not_null
+      - name: severity
+        description: "Severidad del rechazo: blocking si hay drift, high para DQ-001/DQ-002."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["high", "blocking"]
