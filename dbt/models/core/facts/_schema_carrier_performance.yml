@@ -1,0 +1,87 @@
+version: 2
+
+# Esquema de tests de los hechos canónicos de incidencias y ofertas de
+# transportistas. No sustituye ni modifica el _schema.yml existente de
+# fact_shipments ni el de los hechos financieros. Declara el grano de cada
+# hecho, su clave natural única y no nula y la integridad referencial con aviso
+# (DQ-004): el envío se une de forma interna y no hay huérfanos dentro del
+# hecho, mientras que la clave de transportista puede quedar nula si el id no
+# existe en dim_carrier, sin inferidos ni versiones nuevas. El aviso documenta
+# la integridad si una carga futura rompiera ese supuesto.
+
+models:
+  - name: fact_carrier_incidents
+    description: >
+      Hecho de incidencias de transportistas. Grano: una fila por incidencia
+      válida (incident_id), con fecha de negocio reported_ts, sin partición ni
+      versión. El estado y el cierre son atributos de esa fila, no eventos.
+      Conserva damage_flag, claim_amount y las medidas derivadas de marcas de
+      tiempo response_minutes y resolution_minutes, sin KPIs ni umbrales y sin
+      conversión de moneda (todo COP).
+    columns:
+      - name: incident_id
+        description: "Identificador natural de la incidencia; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: shipment_id
+        description: >
+          Envío de la incidencia; se comprueba contra fact_shipments con aviso
+          si el envío no existe (DQ-004). Las incidencias huérfanas quedan
+          fuera del hecho por la unión interna.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fact_shipments')
+                field: shipment_id
+              config:
+                severity: warn
+      - name: carrier_key
+        description: >
+          Clave sustituta del transportista, md5(carrier_id); nula si el id no
+          existe en dim_carrier, sin inferidos. Se comprueba con aviso (DQ-004).
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_carrier')
+                field: carrier_key
+              config:
+                severity: warn
+
+  - name: fact_carrier_tenders
+    description: >
+      Hecho de ofertas de transportistas. Grano: una fila por oferta válida
+      (tender_id), con fecha de negocio offered_ts, sin partición ni versión.
+      El estado de respuesta y la tarifa aceptada son atributos de esa fila, no
+      eventos. Conserva accepted_flag, offered_rate_amount,
+      accepted_rate_amount y response_minutes, sin KPIs ni umbrales y sin
+      conversión de moneda (todo COP).
+    columns:
+      - name: tender_id
+        description: "Identificador natural de la oferta; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: shipment_id
+        description: >
+          Envío de la oferta; se comprueba contra fact_shipments con aviso si
+          el envío no existe (DQ-004). Las ofertas huérfanas quedan fuera del
+          hecho por la unión interna.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fact_shipments')
+                field: shipment_id
+              config:
+                severity: warn
+      - name: carrier_key
+        description: >
+          Clave sustituta del transportista, md5(carrier_id); nula si el id no
+          existe en dim_carrier, sin inferidos. Se comprueba con aviso (DQ-004).
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_carrier')
+                field: carrier_key
+              config:
+                severity: warn

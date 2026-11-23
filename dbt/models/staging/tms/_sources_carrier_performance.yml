@@ -1,0 +1,79 @@
+version: 2
+
+# Incidencias y ofertas de transportistas aterrizadas desde el esquema tms por
+# watermark. No se redeclara la fuente `tms` (maestros y envíos), que ya existe
+# en staging/tms/_sources.yml. No se declaran tests de fuente: la calidad se
+# clasifica en staging y cuarentena. Los defectos no se corrigen en raw.
+
+sources:
+  - name: tms_carrier_performance
+    description: "Sistema de gestión de transporte: incidencias y ofertas de transportistas extraídas del esquema tms por watermark y cargadas en raw."
+    schema: raw
+    tables:
+      - name: carrier_incidents
+        description: "Incidencias reportadas sobre envíos de transportistas."
+        columns:
+          - name: incident_id
+            description: "Identificador natural de la incidencia."
+          - name: shipment_id
+            description: "Envío al que pertenece la incidencia."
+          - name: carrier_id
+            description: "Transportista implicado en la incidencia."
+          - name: incident_type
+            description: "Tipo de incidencia."
+          - name: severity
+            description: "Gravedad de la incidencia."
+          - name: damage_flag
+            description: "Verdadero si la incidencia implica daño en la mercancía."
+          - name: claim_amount
+            description: "Importe reclamado; puede llegar nulo."
+          - name: currency_code
+            description: "Moneda del importe reclamado (COP)."
+          - name: reported_ts
+            description: "Fecha y hora en que se reportó la incidencia."
+          - name: responded_ts
+            description: "Fecha y hora de respuesta del transportista."
+          - name: resolved_ts
+            description: "Fecha y hora de resolución; nula si la incidencia sigue abierta."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Tabla de origen; en esta fuente, tms.carrier_incidents."
+          - name: source_file_hash
+            description: "SHA-256 del lote extraído de tms."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: carrier_tenders
+        description: "Ofertas de envío presentadas a transportistas."
+        columns:
+          - name: tender_id
+            description: "Identificador natural de la oferta."
+          - name: shipment_id
+            description: "Envío ofertado."
+          - name: carrier_id
+            description: "Transportista al que se ofrece el envío."
+          - name: offered_ts
+            description: "Fecha y hora en que se ofreció el envío."
+          - name: responded_ts
+            description: "Fecha y hora de respuesta; nula si no hubo respuesta."
+          - name: response_status
+            description: "Estado de la respuesta; nulo si no hubo respuesta."
+          - name: offered_rate_amount
+            description: "Tarifa ofrecida."
+          - name: accepted_rate_amount
+            description: "Tarifa aceptada; nula si la oferta no fue aceptada."
+          - name: currency_code
+            description: "Moneda de las tarifas (COP)."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Tabla de origen; en esta fuente, tms.carrier_tenders."
+          - name: source_file_hash
+            description: "SHA-256 del lote extraído de tms."
+          - name: ingested_at
+            description: "Momento de la carga en raw."

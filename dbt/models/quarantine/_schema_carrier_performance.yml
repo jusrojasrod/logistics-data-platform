@@ -1,0 +1,55 @@
+version: 2
+
+# Cuarentena nueva del corte de incidencias y ofertas de transportistas. No
+# sustituye ni modifica la cuarentena de la vía por lotes, la financiera ni la
+# de la vía API.
+
+models:
+  - name: carrier_performance_items
+    description: >
+      Filas rechazadas de incidencias y ofertas de transportistas. Una fila por
+      fila rechazada, con la regla principal según la prioridad declarada en
+      cada modelo validado (DQ-010), la clave natural y los metadatos en
+      payload. Junto con los modelos _valid de ambas entidades forma una
+      partición exacta de cada entidad sobre raw; con datos sin rechazos por
+      moneda la tabla está vacía.
+    columns:
+      - name: quarantine_id
+        description: >
+          md5 de source_table, run_id, clave natural, source_file_hash y
+          copy_rank; identifica la fila rechazada.
+        data_tests:
+          - unique
+          - not_null
+      - name: source_table
+        description: "Tabla de origen de la fila rechazada (raw.carrier_incidents o raw.carrier_tenders)."
+        data_tests:
+          - not_null
+      - name: rule_id
+        description: "Regla principal incumplida según la prioridad declarada."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["DQ-010"]
+      - name: reason
+        description: "Regla principal y lista de todas las reglas incumplidas."
+        data_tests:
+          - not_null
+      - name: payload
+        description: "Clave natural, metadatos, dq_errors y dq_primary_rule de la fila rechazada en jsonb."
+        data_tests:
+          - not_null
+      - name: detected_at
+        description: "Momento en que la construcción del modelo detectó el rechazo."
+      - name: run_id
+        description: "Carga de raw a la que pertenece la fila rechazada."
+        data_tests:
+          - not_null
+      - name: severity
+        description: "Severidad del rechazo: high para la regla aplicable."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["high"]

@@ -1,0 +1,100 @@
+version: 2
+
+# Grano y tests genéricos del staging por lotes de incidencias y ofertas de
+# transportistas. Los modelos base y _validated se documentan sin tests de
+# clave: pueden contener copias repetidas del origen. La unicidad se declara
+# solo en los modelos _valid, ya filtrados por calidad. Las claves de envío y
+# de transportista de los _valid se comprueban contra el padre correspondiente
+# con aviso (DQ-004): un registro con padre ausente se conserva en _valid y se
+# descarta aguas abajo, en el hecho, sin rechazar filas aquí.
+
+models:
+  - name: stg_tms__carrier_incidents
+    description: >
+      Incidencias de transportistas tipadas desde raw.carrier_incidents sin
+      filtrar por ejecución ni por fecha. Una fila por fila de origen, con
+      copy_rank por incident_id y los cinco metadatos de carga.
+
+  - name: stg_tms__carrier_incidents_validated
+    description: >
+      Incidencias tipadas clasificadas por calidad. Una fila por fila de
+      origen, con dq_errors ordenado por prioridad, dq_primary_rule e is_valid.
+
+  - name: stg_tms__carrier_incidents_valid
+    description: >
+      Incidencias válidas. Grano: una fila por incident_id. Conserva las
+      columnas de negocio, los cinco metadatos y copy_rank; los huérfanos de
+      envío no se descartan aquí.
+    columns:
+      - name: incident_id
+        description: "Identificador natural de la incidencia; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: shipment_id
+        description: >
+          Envío de la incidencia; se comprueba contra fact_shipments con aviso
+          si el envío aún no ha llegado (DQ-004).
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fact_shipments')
+                field: shipment_id
+              config:
+                severity: warn
+      - name: carrier_id
+        description: >
+          Transportista de la incidencia; se comprueba contra dim_carrier con
+          aviso si el id no existe (DQ-004).
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_carrier')
+                field: carrier_id
+              config:
+                severity: warn
+
+  - name: stg_tms__carrier_tenders
+    description: >
+      Ofertas de transportistas tipadas desde raw.carrier_tenders sin filtrar
+      por ejecución ni por fecha. Una fila por fila de origen, con copy_rank
+      por tender_id y los cinco metadatos de carga.
+
+  - name: stg_tms__carrier_tenders_validated
+    description: >
+      Ofertas tipadas clasificadas por calidad. Una fila por fila de origen,
+      con dq_errors ordenado por prioridad, dq_primary_rule e is_valid.
+
+  - name: stg_tms__carrier_tenders_valid
+    description: >
+      Ofertas válidas. Grano: una fila por tender_id. Conserva las columnas de
+      negocio, los cinco metadatos y copy_rank; los huérfanos de envío no se
+      descartan aquí.
+    columns:
+      - name: tender_id
+        description: "Identificador natural de la oferta; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: shipment_id
+        description: >
+          Envío de la oferta; se comprueba contra fact_shipments con aviso si
+          el envío aún no ha llegado (DQ-004).
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fact_shipments')
+                field: shipment_id
+              config:
+                severity: warn
+      - name: carrier_id
+        description: >
+          Transportista de la oferta; se comprueba contra dim_carrier con aviso
+          si el id no existe (DQ-004).
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_carrier')
+                field: carrier_id
+              config:
+                severity: warn
