@@ -1,0 +1,263 @@
+version: 2
+
+# Entidades operativas del esquema tms aterrizadas en raw por watermark: flota,
+# viajes, tramos, paradas, eventos y combustible. No se redeclara la fuente
+# `tms` (maestros y envíos), que ya existe en staging/tms/_sources.yml, ni la
+# fuente `tms_carrier_performance` (incidencias y ofertas). No se declara la
+# fuente `api`. No se declaran tests de fuente: la calidad se clasifica en
+# staging y cuarentena. Los defectos no se corrigen en raw.
+
+sources:
+  - name: tms_operations
+    description: "Sistema de gestión de transporte: entidades operativas extraídas del esquema tms por watermark y cargadas en raw."
+    schema: raw
+    tables:
+      - name: vehicles
+        description: "Vehículos de la flota propios de los transportistas."
+        columns:
+          - name: vehicle_id
+            description: "Identificador natural del vehículo."
+          - name: carrier_id
+            description: "Transportista propietario del vehículo."
+          - name: plate
+            description: "Placa del vehículo."
+          - name: vehicle_type
+            description: "Tipo de vehículo."
+          - name: capacity_kg
+            description: "Capacidad de carga en kilogramos."
+          - name: capacity_m3
+            description: "Capacidad de volumen en metros cúbicos."
+          - name: fuel_type
+            description: "Tipo de combustible."
+          - name: km_per_gallon
+            description: "Rendimiento declarado en kilómetros por galón."
+          - name: purchase_date
+            description: "Fecha de compra del vehículo."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Tabla de origen; en esta fuente, tms.vehicles."
+          - name: source_file_hash
+            description: "SHA-256 del lote extraído de tms."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: drivers
+        description: "Conductores de la flota propios de los transportistas."
+        columns:
+          - name: driver_id
+            description: "Identificador natural del conductor."
+          - name: carrier_id
+            description: "Transportista al que pertenece el conductor."
+          - name: driver_name
+            description: "Nombre del conductor; dato ficticio."
+          - name: driver_document
+            description: "Documento de identidad del conductor; dato sintético."
+          - name: driver_phone
+            description: "Teléfono del conductor; dato sintético."
+          - name: driver_email
+            description: "Correo electrónico del conductor; dato sintético."
+          - name: license_type
+            description: "Tipo de licencia de conducción."
+          - name: hire_date
+            description: "Fecha de contratación del conductor."
+          - name: base_city
+            description: "Ciudad base del conductor."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Tabla de origen; en esta fuente, tms.drivers."
+          - name: source_file_hash
+            description: "SHA-256 del lote extraído de tms."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: trips
+        description: "Viajes consolidados de la flota propia."
+        columns:
+          - name: trip_id
+            description: "Identificador natural del viaje."
+          - name: carrier_id
+            description: "Transportista propietario del viaje."
+          - name: vehicle_id
+            description: "Vehículo asignado al viaje."
+          - name: driver_id
+            description: "Conductor asignado al viaje."
+          - name: trip_type
+            description: "Tipo de viaje: delivery o repositioning."
+          - name: origin_city
+            description: "Ciudad de origen del viaje."
+          - name: start_ts
+            description: "Fecha y hora de inicio del viaje."
+          - name: end_ts
+            description: "Fecha y hora de fin del viaje; nula si está en curso."
+          - name: distance_km
+            description: "Distancia recorrida en kilómetros."
+          - name: empty_km
+            description: "Kilómetros recorridos sin carga."
+          - name: stopped_minutes
+            description: "Minutos de parada durante el viaje."
+          - name: fuel_gallons
+            description: "Galones de combustible consumidos en el viaje."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Tabla de origen; en esta fuente, tms.trips."
+          - name: source_file_hash
+            description: "SHA-256 del lote extraído de tms."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: trip_legs
+        description: "Tramos de los viajes de la flota propia."
+        columns:
+          - name: trip_id
+            description: "Viaje al que pertenece el tramo."
+          - name: leg_sequence
+            description: "Orden del tramo dentro del viaje."
+          - name: origin_city
+            description: "Ciudad de origen del tramo."
+          - name: destination_city
+            description: "Ciudad de destino del tramo."
+          - name: distance_km
+            description: "Distancia del tramo en kilómetros."
+          - name: departure_ts
+            description: "Fecha y hora de salida del tramo."
+          - name: arrival_ts
+            description: "Fecha y hora de llegada; nula si aún no se observa."
+          - name: loaded_flag
+            description: "Verdadero si el tramo lleva carga."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Tabla de origen; en esta fuente, tms.trip_legs."
+          - name: source_file_hash
+            description: "SHA-256 del lote extraído de tms."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: shipment_legs
+        description: "Tramos de viaje recorridos por cada envío."
+        columns:
+          - name: shipment_id
+            description: "Envío que viaja en el tramo."
+          - name: trip_id
+            description: "Viaje que contiene el tramo."
+          - name: leg_sequence
+            description: "Orden del tramo dentro del viaje."
+          - name: loaded_km
+            description: "Distancia cargada del envío en el tramo, en kilómetros."
+          - name: weight_kg
+            description: "Peso del envío en el tramo, en kilogramos."
+          - name: volume_m3
+            description: "Volumen del envío en el tramo, en metros cúbicos."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Tabla de origen; en esta fuente, tms.shipment_legs."
+          - name: source_file_hash
+            description: "SHA-256 del lote extraído de tms."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: shipment_stops
+        description: "Paradas planificadas y observadas de cada envío."
+        columns:
+          - name: shipment_id
+            description: "Envío al que pertenece la parada."
+          - name: stop_sequence
+            description: "Orden de la parada dentro del envío."
+          - name: stop_type
+            description: "Tipo de parada: pickup, transit_hub o delivery."
+          - name: city
+            description: "Ciudad de la parada."
+          - name: planned_ts
+            description: "Fecha y hora planificada de la parada."
+          - name: actual_ts
+            description: "Fecha y hora real de la parada; nula si aún no se observa."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Tabla de origen; en esta fuente, tms.shipment_stops."
+          - name: source_file_hash
+            description: "SHA-256 del lote extraído de tms."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: shipment_events
+        description: "Eventos del ciclo de vida de cada envío."
+        columns:
+          - name: event_id
+            description: "Identificador natural del evento."
+          - name: shipment_id
+            description: "Envío al que pertenece el evento."
+          - name: event_ts
+            description: "Fecha y hora del evento."
+          - name: event_type
+            description: "Tipo de evento del ciclo de vida del envío."
+          - name: location_city
+            description: "Ciudad donde se registró el evento."
+          - name: latitude
+            description: "Latitud de la ciudad del evento."
+          - name: longitude
+            description: "Longitud de la ciudad del evento."
+          - name: severity
+            description: "Severidad del evento."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Tabla de origen; en esta fuente, tms.shipment_events."
+          - name: source_file_hash
+            description: "SHA-256 del lote extraído de tms."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
+
+      - name: fuel_transactions
+        description: "Compras de combustible registradas durante los viajes."
+        columns:
+          - name: fuel_txn_id
+            description: "Identificador natural de la compra de combustible."
+          - name: trip_id
+            description: "Viaje en que se registró la compra."
+          - name: vehicle_id
+            description: "Vehículo que recibió el combustible."
+          - name: driver_id
+            description: "Conductor que registró la compra."
+          - name: txn_ts
+            description: "Fecha y hora de la compra."
+          - name: station_city
+            description: "Ciudad de la estación de servicio."
+          - name: gallons
+            description: "Galones comprados."
+          - name: price_per_gallon_amount
+            description: "Precio por galón en la moneda de la operación."
+          - name: total_amount
+            description: "Importe total de la compra."
+          - name: currency_code
+            description: "Moneda del importe; en esta fuente, COP."
+          - name: odometer_km
+            description: "Lectura del odómetro en kilómetros al repostar."
+          - name: run_id
+            description: "Identificador de la ejecución de carga."
+          - name: source_system
+            description: "Sistema de origen declarado por el conector."
+          - name: source_file
+            description: "Tabla de origen; en esta fuente, tms.fuel_transactions."
+          - name: source_file_hash
+            description: "SHA-256 del lote extraído de tms."
+          - name: ingested_at
+            description: "Momento de la carga en raw."
