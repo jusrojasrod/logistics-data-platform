@@ -1383,3 +1383,83 @@ fact_shipments + dim_customer + dim_carrier + dim_route + dim_service_type ─�
 ```
 
 Los modelos `stg_erp__*` son vistas; `core.dim_tariff`, los tres hechos y `quarantine.financial_items` son tablas que se reconstruyen en cada `dbt build`. Como en el resto del proyecto, `information_schema` muestra sus columnas como nulables: las garantías de unicidad y no nulidad salen de la lógica de los modelos y de los tests de dbt.
+
+## 14. Desempeño de transportistas (incidencias y ofertas)
+
+Este corte convierte las dos entidades TMS de incidencias y ofertas aterrizadas en `raw` (§2.17 y §2.18) en dos hechos canónicos. Lee solo la vía por lotes: no modifica el linaje API de incidencias (§11 y §12), `fact_shipments`, los hechos financieros (§13) ni ningún modelo vigente. Todos los importes se expresan en `COP`, sin conversión de moneda. Los KPIs de daños y de aceptación y el scorecard quedan para cortes posteriores y están por medir aquí.
+
+### 14.1 Fuentes y claves naturales
+
+La fuente dbt `tms_carrier_performance`, declarada en `dbt/models/staging/tms/_sources_carrier_performance.yml`, lee ambas tablas del esquema `raw`; no redeclara la fuente `tms` de maestros y envíos, que ya existe en otro archivo.
+
+| Entidad | Tabla `raw` | Clave natural | Columnas de negocio |
+|---|---|---|---|
+| Incidencias | `raw.carrier_incidents` | `incident_id` | §2.18 |
+| Ofertas | `raw.carrier_tenders` | `tender_id` | §2.17 |
+
+Se lee todo `raw` sin suponer `run_id` ni archivo común: las filas publicadas después de su fecha de negocio por el retraso de disponibilidad del envío (§1.1) llegan en la extracción siguiente y no se descartan por fecha. Las copias repetidas por clave natural no se eliminan en `raw`: se marcan en staging.
+
+### 14.2 Staging TMS
+
+Cada entidad tiene tres modelos en `dbt/models/staging/tms/`, todos vistas en el esquema `stg`:
+
+| Capa | Modelo | Qué hace |
+|---|---|---|
+| Tipado | `stg_tms__carrier_<entidad>` | Tipa la tabla `raw` sin borrar filas y calcula `copy_rank = row_number() over (partition by <clave natural> order by ingested_at desc, source_file_hash desc)`. Conserva las columnas de negocio y los cinco metadatos de ejecución de §2.1 |
+| Clasificación | `stg_tms__carrier_<entidad>_validated` | Añade `dq_errors` (arreglo de texto en orden de prioridad), `dq_primary_rule` e `is_valid` |
+| Válidos | `stg_tms__carrier_<entidad>_valid` | Filas con `is_valid`, con la clave natural, las columnas de negocio, los metadatos y `copy_rank`, sin las columnas de clasificación |
+
+`copy_rank = 1` conserva la copia más reciente de cada clave; las copias repetidas se marcan con un valor mayor y se clasifican en el modelo validado. No se filtra por `run_id`, de modo que las publicaciones posteriores reciben el mismo tratamiento aunque lleguen en cargas distintas. Los huérfanos de envío no se descartan en staging: permanecen en `_valid` y se excluyen aguas abajo, en el hecho.
+
+### 14.3 Hechos de incidencias y ofertas
+
+Los dos hechos están en el esquema `core`, se materializan como tablas que se reconstruyen en cada `dbt build` y declaran su grano en `dbt/models/core/facts/_schema_carrier_performance.yml`.
+
+| Hecho | Grano | Clave del grano | Columnas principales |
+|---|---|---|---|
+| `core.fact_carrier_incidents` | Una incidencia válida; fecha de negocio `reported_ts`, sin partición ni versión | `incident_id` (única y no nula) | `shipment_id`, `carrier_id`, `carrier_key`, `incident_type`, `severity`, `damage_flag`, `claim_amount`, `currency_code`, `reported_ts`, `responded_ts`, `resolved_ts`, `response_minutes`, `resolution_minutes` y los cinco metadatos de ejecución (§2.1) |
+| `core.fact_carrier_tenders` | Una oferta válida; fecha de negocio `offered_ts`, sin partición ni versión | `tender_id` (única y no nula) | `shipment_id`, `carrier_id`, `carrier_key`, `offered_ts`, `responded_ts`, `response_status`, `offered_rate_amount`, `accepted_rate_amount`, `currency_code`, `accepted_flag`, `response_minutes` y los cinco metadatos de ejecución (§2.1) |
+
+El estado (`response_status`, `resolved_ts` y `accepted_rate_amount`) y el cierre son atributos de esa fila, no eventos ni versiones. El envío se une con unión interna a `fact_shipments` sobre `shipment_id`: una incidencia u oferta huérfana queda fuera del hecho hasta que llega su padre y se recupera en la construcción siguiente, sin entrar en cuarentena. El transportista se une con unión izquierda a `dim_carrier`, de una sola versión, con `carrier_key = md5(carrier_id)`: la clave queda nula si el id no existe, sin miembros inferidos ni historia de dimensión. Las medidas se derivan de marcas de tiempo, en minutos y sin redondeo ni umbral: `response_minutes` desde `responded_ts - reported_ts` en incidencias y desde `responded_ts - offered_ts` en ofertas, y `resolution_minutes` desde `resolved_ts - reported_ts`. `accepted_flag` es `response_status = 'accepted'`. Los nulos esperados de estados no cerrados y de ofertas sin respuesta permanecen en el hecho: las reglas de calidad solo avisan.
+
+### 14.4 Cuarentena de desempeño
+
+`quarantine.carrier_performance_items` (esquema `quarantine`, tabla) reúne en una sola tabla las filas rechazadas de las dos entidades. Tiene una fila por fila rechazada, no por regla incumplida, y emite las ocho columnas canónicas de §6:
+
+| Columna | Descripción |
+|---|---|
+| `quarantine_id` | `md5` de `source_table`, `run_id`, clave natural, `source_file_hash` y `copy_rank` unidos con `|` |
+| `source_table` | Entidad de origen: `raw.carrier_incidents` o `raw.carrier_tenders` |
+| `rule_id` | Regla principal de la fila, igual a `dq_primary_rule` |
+| `reason` | Regla principal y lista de todas las reglas incumplidas |
+| `payload` | Objeto `jsonb` con la clave natural y el nombre de su columna, los cinco metadatos, `copy_rank`, `dq_errors` y `dq_primary_rule` |
+| `detected_at` | Instante en que la construcción detectó el rechazo |
+| `run_id` | Carga de `raw` a la que pertenece la fila |
+| `severity` | Severidad del rechazo; hoy siempre `high` |
+
+Junto con los dos `_valid` forma la partición exacta de cada entidad: por `run_id` y clave natural, cada fila de `raw` está en válidos o en cuarentena, nunca en los dos ni en ninguno, y las copias repetidas colapsan en una clave. Lo comprueba `assert_carrier_performance_partition`. Con el perfil `demo` las dos entidades no tienen defectos de moneda (todo `COP`), así que la tabla puede quedar vacía y la tasa de rechazo está por medir; la cobertura se verifica en la definición del modelo, que une los dos `_validated`.
+
+### 14.5 Reglas de calidad aplicadas
+
+No se añaden reglas al catálogo: siguen las mismas de §6 y §8, con los mismos conteos de reglas, KPIs y DAGs. A continuación se listan las que afectan a este corte.
+
+| Regla | Ámbito | Qué comprueba | Efecto |
+|---|---|---|---|
+| DQ-010 | Los dos `stg_tms__carrier_*_validated` | `currency_code` no nulo e igual a `COP` | Rechaza |
+| DQ-004 | Los dos `_valid` y los dos hechos | `shipment_id` existe en `fact_shipments`; `carrier_id` o `carrier_key` existe en `dim_carrier` | Aviso (`severity: warn`) |
+| DQ-006a | `assert_carrier_performance_freshness` | Frescura de la última carga de las dos fuentes TMS | Aviso (`severity: warn`), no detiene la construcción |
+| DQ-014 | `assert_carrier_performance_tender_response` | Toda oferta válida tiene respuesta o marca de expiración | Aviso (`severity: warn`), no envía a cuarentena |
+
+Los nulos esperados (`no_response` en ofertas y `unclosed` en incidencias) no rechazan filas: permanecen en el hecho y el test de respuesta de ofertas solo avisa. Los huérfanos transitorios tampoco son un rechazo: se mantienen en `_valid`, quedan fuera del hecho mientras no exista su padre y se recuperan en la siguiente construcción. Los tests `relationships` de las claves contra sus padres solo avisan. Los tests singulares del corte son `assert_carrier_performance_partition`, `assert_carrier_performance_grain`, `assert_carrier_performance_orphans`, `assert_carrier_performance_late_rows`, `assert_carrier_performance_freshness` y `assert_carrier_performance_tender_response`. Los cuatro primeros emiten una fila de fallo si su población de origen está vacía, para no pasar en vacío; `assert_carrier_performance_late_rows` exige al menos una fila tardía por entidad en `_valid` y en el hecho.
+
+### 14.6 Linaje
+
+```text
+raw.carrier_incidents ─► stg_tms__carrier_incidents ─► stg_tms__carrier_incidents_validated ─┬─► stg_tms__carrier_incidents_valid ─► core.fact_carrier_incidents
+                                                                                              └─► quarantine.carrier_performance_items
+raw.carrier_tenders   ─► stg_tms__carrier_tenders   ─► stg_tms__carrier_tenders_validated   ─┬─► stg_tms__carrier_tenders_valid   ─► core.fact_carrier_tenders
+                                                                                              └─► quarantine.carrier_performance_items
+fact_shipments + dim_carrier ─► los dos hechos (shipment_id por unión interna, carrier_key por unión izquierda)
+```
+
+Los seis modelos de staging son vistas; los dos hechos y `quarantine.carrier_performance_items` son tablas que se reconstruyen en cada `dbt build`. Como en el resto del proyecto, `information_schema` muestra sus columnas como nulables: las garantías de unicidad y no nulidad salen de la lógica de los modelos y de los tests de dbt. El linaje API de incidencias (§11 y §12) queda intacto y no alimenta estos hechos.
