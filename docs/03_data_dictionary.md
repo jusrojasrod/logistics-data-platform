@@ -1276,3 +1276,110 @@ MongoDB meta.api_schema_drift ─► has_drift_flag / drift_fields ────�
 Los tres modelos `core_api__shipments`, `core_api__shipment_events` y `core_api__carrier_incidents` (esquema `core`, tablas) publican solo elementos `is_valid` y sin drift. Declaran su propio grano —una fila por elemento válido con clave `(run_id, endpoint, page, item_index)`— en su `_schema.yml`: no son un hecho canónico reservado a cortes posteriores ni sustituyen a `core.fact_shipments` (§9.3). No llevan claves sustitutas, banderas de cálculo ni importes, y no se tocan los modelos de la vía por lotes.
 
 La partición, la unicidad del grano y la exclusión del drift se comprueban con los tests singulares `assert_api_items_partition`, `assert_api_grain` y `assert_api_drift_excluded_from_core`. El detalle del linaje completo está en §4 y la operación de la vía API en [`07_runbook.md`](07_runbook.md) §4.3 a §4.5.
+
+## 13. Core financiero (ERP)
+
+Este corte convierte las seis entidades financieras del ERP aterrizadas en `raw` (§2.19 y §2.23 a §2.27) en tres hechos canónicos y una dimensión de tarifa con historia. No modifica `fact_shipments`, sus tests ni los modelos de la vía API. Todos los importes se expresan en `COP`, sin conversión de moneda.
+
+### 13.1 Fuentes y claves naturales
+
+Las seis fuentes se leen desde el esquema `raw` a través de la fuente dbt `erp_financial`, declarada en `dbt/models/staging/erp/_sources.yml`. Cada entidad conserva su clave natural y los cinco metadatos de ejecución de §2.1.
+
+| Entidad | Tabla `raw` | Clave natural | Columnas de negocio |
+|---|---|---|---|
+| Tarifas | `raw.tariffs` | `tariff_id`, `valid_from` | §2.19 |
+| Facturas | `raw.invoices` | `invoice_id` | §2.23 |
+| Líneas de factura | `raw.invoice_lines` | `invoice_line_id` | §2.24 |
+| Pagos | `raw.payments` | `payment_id` | §2.25 |
+| Liquidaciones a carrier | `raw.carrier_settlements` | `settlement_line_id` | §2.26 |
+| Costos de flota propia | `raw.shipment_costs` | `shipment_cost_id` | §2.27 |
+
+El archivo principal y el tardío de cada entidad se leen sin suponer que comparten `run_id` ni archivo: una línea, un pago o una liquidación tardíos pueden estar en `raw` antes que su cabecera, su factura o su envío. Los modelos no descartan esas filas por su origen ni por huérfanos transitorios.
+
+### 13.2 Staging ERP
+
+Cada entidad tiene tres modelos en `dbt/models/staging/erp/`, todos vistas en el esquema `stg`:
+
+| Capa | Modelo | Qué hace |
+|---|---|---|
+| Tipado | `stg_erp__<entidad>` | Tipa la tabla `raw` sin borrar filas y calcula `copy_rank = row_number() over (partition by <clave natural> order by ingested_at desc, source_file_hash desc)`. Conserva las columnas de negocio y los cinco metadatos |
+| Clasificación | `stg_erp__<entidad>_validated` | Añade `dq_errors` (arreglo de texto en orden de prioridad), `dq_primary_rule` e `is_valid` |
+| Válidos | `stg_erp__<entidad>_valid` | Filas con `is_valid`, con la clave natural, las columnas de negocio, los metadatos y `copy_rank`, sin las columnas de clasificación |
+
+`copy_rank = 1` conserva la copia más reciente de cada clave; las copias repetidas se marcan con un valor mayor y se clasifican en el modelo validado. No se filtra por `run_id`, de modo que principal y tardío reciben el mismo tratamiento aunque lleguen en cargas distintas.
+
+### 13.3 Dimensión de tarifa con historia
+
+`core.dim_tariff` (esquema `core`, tabla, `dbt/models/core/dimensions/dim_tariff.sql`) es una dimensión con historia: una fila por versión de tarifa de `stg_erp__tariffs_valid`.
+
+| Columna | Descripción |
+|---|---|
+| `tariff_key` | Clave sustituta de la versión: `md5(tariff_id || '|' || valid_from)`, única y no nula |
+| `tariff_id`, `customer_id`, `route_id`, `service_type_id` | Identificador de la tarifa y claves naturales de cliente, ruta y tipo de servicio |
+| `base_amount`, `per_km_amount`, `fuel_surcharge_pct`, `currency_code` | Atributos de la tarifa; `currency_code = 'COP'` |
+| `valid_from` | Inicio de vigencia, inclusive |
+| `valid_to` | Fin de vigencia, exclusivo; el centinela `9999-12-31` representa la versión vigente, porque `raw` deja nulo `valid_to` en esa versión |
+| `is_current` | `true` solo en la versión vigente; describe la versión, no se usa para atribuir historia |
+| `run_id`, `source_system`, `source_file`, `source_file_hash`, `ingested_at`, `copy_rank` | Metadatos de trazabilidad heredados de `stg_erp__tariffs_valid` |
+
+La vigencia se resuelve por fechas de negocio, nunca por `is_current`: en `fact_invoices` una línea se une a la versión de tarifa que tiene iguales `customer_id`, `route_id` y `service_type_id`, y cumple `pickup_date >= valid_from` y `pickup_date < valid_to`. El resultado queda en `tariff_key`. Los importes de `raw.invoice_lines` se conservan tal cual: este corte no recalcula tarifas ni publica cifras de facturación.
+
+### 13.4 Hechos financieros
+
+Los tres hechos están en el esquema `core`, se materializan como tablas que se reconstruyen en cada `dbt build` y declaran su grano en `dbt/models/core/facts/_schema_financial.yml`. Se construyen con unión interna a sus padres (`stg_erp__*_valid` y `fact_shipments`): una línea huérfana queda fuera del hecho hasta que llega su padre y se recupera en la construcción siguiente, sin entrar en cuarentena. Ninguno de los tres pone importes en `fact_shipments`.
+
+| Hecho | Grano | Clave del grano | Columnas principales |
+|---|---|---|---|
+| `core.fact_invoices` | Una línea de factura válida; la cabecera y el pago se integran en la línea, sin hechos propios | `invoice_line_id` (única y no nula) | `invoice_id`, `shipment_id`, `line_number`, `concept`, `tariff_amount`, `billed_revenue_amount`, `tax_amount`, `variance_amount`, `currency_code`, `invoice_date`, `due_date`, `invoice_status`, `total_amount`, `payment_id`, `paid_date`, `payment_amount`, `payment_method`, `customer_id`, `carrier_id`, `route_id`, `service_type_id`, `pickup_date`, `customer_key`, `carrier_key`, `route_key`, `service_type_key`, `tariff_key`, `payment_days` |
+| `core.fact_carrier_settlements` | Una línea de liquidación válida: envío × carrier × concepto | `settlement_line_id` (única y no nula) | `settlement_id`, `shipment_id`, `carrier_id`, `carrier_key`, `concept`, `settled_date`, `payable_amount`, `deduction_amount`, `fuel_surcharge_amount`, `settlement_status`, `currency_code`, ids naturales y claves de cliente, ruta y tipo de servicio leídos de `fact_shipments` |
+| `core.fact_shipment_costs` | Un costo válido: envío × componente de costo | `shipment_cost_id` (única y no nula) | `shipment_id`, `carrier_id`, `carrier_key`, `cost_component`, `cost_date`, `cost_amount`, `cost_center`, `currency_code`, ids naturales y claves de cliente, ruta y tipo de servicio leídos de `fact_shipments` |
+
+`payment_id` es nulo en las facturas sin pago, que siguen incluidas en `fact_invoices`. Los ids naturales y las claves de las dimensiones existentes se leen de `fact_shipments`; las claves foráneas llevan tests `relationships` con aviso, pero los hechos no contienen claves sin padre. La no duplicación se vigila con `assert_financial_cost_not_duplicated`: un envío con liquidación de carrier no tiene costos de flota propia, y al revés.
+
+### 13.5 Cuarentena financiera
+
+`quarantine.financial_items` (esquema `quarantine`, tabla) reúne en una sola tabla las filas rechazadas de las seis entidades. Tiene una fila por fila rechazada, no por regla incumplida, y emite las mismas ocho columnas canónicas que `quarantine.shipments` (§6):
+
+| Columna | Descripción |
+|---|---|
+| `quarantine_id` | `md5` de `source_table`, `run_id`, clave natural, `source_file_hash` y `copy_rank` unidos con `|` |
+| `source_table` | Entidad de origen: `raw.tariffs`, `raw.invoices`, `raw.invoice_lines`, `raw.payments`, `raw.carrier_settlements` o `raw.shipment_costs` |
+| `rule_id` | Regla principal de la fila, igual a `dq_primary_rule` |
+| `reason` | Regla principal y lista de todas las reglas incumplidas |
+| `payload` | Objeto `jsonb` con la clave natural, los cinco metadatos, `copy_rank`, `dq_errors` y `dq_primary_rule` |
+| `detected_at` | Instante en que la construcción detectó el rechazo |
+| `run_id` | Carga de `raw` a la que pertenece la fila |
+| `severity` | Severidad del rechazo; hoy siempre `high` |
+
+Junto con los seis `stg_erp__*_valid` forma la partición exacta de cada entidad: por `run_id` y clave natural, cada fila de `raw` está en válidos o en cuarentena, nunca en los dos ni en ninguno. La partición se comprueba con `assert_financial_partition`. Con el perfil `demo` las entidades ERP no tienen defectos inyectados ni duplicados de clave, así que la tabla de cuarentena puede quedar vacía y la tasa de rechazo ERP está por medir; la cobertura de las seis entidades se verifica en la definición del modelo, que une los seis `_validated`.
+
+### 13.6 Reglas de calidad aplicadas
+
+No se añaden reglas al catálogo: siguen las mismas que en §6 y §8, y los mismos conteos de reglas y KPIs. A continuación se listan las que afectan a este corte.
+
+| Regla | Ámbito | Qué comprueba | Efecto |
+|---|---|---|---|
+| DQ-009 | `stg_erp__invoice_lines_validated` | Copia repetida de `invoice_line_id` (`copy_rank > 1`) | Rechaza, con prioridad sobre DQ-010 |
+| DQ-010 | Los seis `stg_erp__*_validated` | `currency_code` no nulo e igual a `COP` | Rechaza |
+| DQ-013 | `stg_erp__carrier_settlements_validated` | Copia repetida de `settlement_line_id` (`copy_rank > 1`) | Rechaza, con prioridad sobre DQ-010 |
+| DQ-006a | `assert_financial_freshness` | Frescura de la última carga de cada fuente ERP | Aviso (`severity: warn`), no detiene la construcción |
+
+`dq_errors` conserva el orden de prioridad declarado en cada modelo validado; `dq_primary_rule` es su primer elemento e `is_valid` es `true` cuando la lista está vacía. Los huérfanos transitorios no son un defecto de calidad: se mantienen en `_valid`, quedan fuera del hecho mientras no exista su padre y se recuperan en el siguiente `dbt build`. Los tests `relationships` de las claves contra sus padres solo avisan.
+
+Los tests singulares del corte son `assert_financial_partition`, `assert_financial_grain`, `assert_financial_late_rows`, `assert_financial_cost_not_duplicated` y `assert_financial_freshness`. Los tres primeros emiten una fila de fallo si su población de origen está vacía, para no pasar en vacío; `assert_financial_late_rows` exige al menos una clave tardía por entidad en `_valid` y en su hecho o dimensión.
+
+### 13.7 Linaje
+
+```text
+raw.tariffs             ─► stg_erp__tariffs             ─► stg_erp__tariffs_validated             ─► stg_erp__tariffs_valid             ─► core.dim_tariff
+raw.invoices            ─► stg_erp__invoices            ─► stg_erp__invoices_validated            ─► stg_erp__invoices_valid            ─┐
+raw.invoice_lines       ─► stg_erp__invoice_lines       ─► stg_erp__invoice_lines_validated       ─► stg_erp__invoice_lines_valid       ─┼► core.fact_invoices
+raw.payments            ─► stg_erp__payments            ─► stg_erp__payments_validated            ─► stg_erp__payments_valid            ─┘
+raw.carrier_settlements ─► stg_erp__carrier_settlements ─► stg_erp__carrier_settlements_validated ─► stg_erp__carrier_settlements_valid ─► core.fact_carrier_settlements
+raw.shipment_costs      ─► stg_erp__shipment_costs      ─► stg_erp__shipment_costs_validated      ─► stg_erp__shipment_costs_valid      ─► core.fact_shipment_costs
+
+cada *_validated ─► quarantine.financial_items (solo filas rechazadas)
+fact_shipments + dim_customer + dim_carrier + dim_route + dim_service_type ─► los tres hechos (ids naturales y claves)
+```
+
+Los modelos `stg_erp__*` son vistas; `core.dim_tariff`, los tres hechos y `quarantine.financial_items` son tablas que se reconstruyen en cada `dbt build`. Como en el resto del proyecto, `information_schema` muestra sus columnas como nulables: las garantías de unicidad y no nulidad salen de la lógica de los modelos y de los tests de dbt.

@@ -1,0 +1,200 @@
+version: 2
+
+# Tests genéricos de staging financiero. Los modelos base y clasificados se
+# documentan sin tests de clave: pueden contener copias repetidas del origen.
+# La unicidad se declara solo en los modelos _valid, que ya han deduplicado y
+# filtrado por calidad. Las claves de envío de los hijos se comprueban contra
+# el padre de staging con aviso, sin rechazar filas: un hijo tardío puede
+# permanecer en _valid hasta que llegue su padre en otra carga.
+
+models:
+  - name: stg_erp__tariffs
+    description: >
+      Tarifas tipadas desde raw.tariffs sin filtrar por ejecución. Una fila
+      por fila de origen, con copy_rank por (tariff_id, valid_from) y los
+      cinco metadatos de carga.
+
+  - name: stg_erp__tariffs_validated
+    description: >
+      Tarifas tipadas clasificadas por calidad. Una fila por fila de origen,
+      con dq_errors ordenado por prioridad, dq_primary_rule e is_valid.
+
+  - name: stg_erp__tariffs_valid
+    description: >
+      Tarifas válidas. Grano: una fila por (tariff_id, valid_from), la clave
+      natural compuesta de la versión de tarifa. Conserva columnas de negocio,
+      los cinco metadatos y copy_rank.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - tariff_id
+              - valid_from
+    columns:
+      - name: tariff_id
+        description: "Identificador natural de la tarifa; parte de la clave del grano."
+        data_tests:
+          - not_null
+      - name: valid_from
+        description: "Inicio de vigencia; parte de la clave del grano."
+        data_tests:
+          - not_null
+
+  - name: stg_erp__invoices
+    description: >
+      Cabeceras de factura tipadas desde raw.invoices sin filtrar por
+      ejecución. Una fila por fila de origen, con copy_rank por invoice_id y
+      los cinco metadatos de carga.
+
+  - name: stg_erp__invoices_validated
+    description: >
+      Cabeceras de factura clasificadas por calidad. Una fila por fila de
+      origen, con dq_errors, dq_primary_rule e is_valid.
+
+  - name: stg_erp__invoices_valid
+    description: >
+      Cabeceras de factura válidas. Grano: una fila por invoice_id. Conserva
+      columnas de negocio, los cinco metadatos y copy_rank.
+    columns:
+      - name: invoice_id
+        description: "Identificador natural de la factura; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+
+  - name: stg_erp__invoice_lines
+    description: >
+      Líneas de factura tipadas desde raw.invoice_lines sin filtrar por
+      ejecución. Una fila por fila de origen, con copy_rank por
+      invoice_line_id y los cinco metadatos de carga.
+
+  - name: stg_erp__invoice_lines_validated
+    description: >
+      Líneas de factura clasificadas por calidad. Una fila por fila de
+      origen, con dq_errors, dq_primary_rule e is_valid.
+
+  - name: stg_erp__invoice_lines_valid
+    description: >
+      Líneas de factura válidas. Grano: una fila por invoice_line_id. Conserva
+      el id de factura y el id de envío, columnas de negocio, los cinco
+      metadatos y copy_rank; los huérfanos transitorios no se descartan.
+    columns:
+      - name: invoice_line_id
+        description: "Identificador natural de la línea; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: invoice_id
+        description: "Factura a la que pertenece la línea; padre con aviso si falta."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_erp__invoices_valid')
+                field: invoice_id
+              config:
+                severity: warn
+      - name: shipment_id
+        description: "Envío facturado; padre de staging con aviso si aún no ha llegado."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_tms__shipments_valid')
+                field: shipment_id
+              config:
+                severity: warn
+
+  - name: stg_erp__payments
+    description: >
+      Pagos tipados desde raw.payments sin filtrar por ejecución. Una fila
+      por fila de origen, con copy_rank por payment_id y los cinco metadatos
+      de carga.
+
+  - name: stg_erp__payments_validated
+    description: >
+      Pagos clasificados por calidad. Una fila por fila de origen, con
+      dq_errors, dq_primary_rule e is_valid.
+
+  - name: stg_erp__payments_valid
+    description: >
+      Pagos válidos. Grano: una fila por payment_id. Conserva el id de factura,
+      columnas de negocio, los cinco metadatos y copy_rank; los huérfanos
+      transitorios no se descartan.
+    columns:
+      - name: payment_id
+        description: "Identificador natural del pago; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: invoice_id
+        description: "Factura a la que se aplica el pago; padre con aviso si falta."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_erp__invoices_valid')
+                field: invoice_id
+              config:
+                severity: warn
+
+  - name: stg_erp__carrier_settlements
+    description: >
+      Liquidaciones a carrier tipadas desde raw.carrier_settlements sin
+      filtrar por ejecución. Una fila por fila de origen, con copy_rank por
+      settlement_line_id y los cinco metadatos de carga.
+
+  - name: stg_erp__carrier_settlements_validated
+    description: >
+      Liquidaciones clasificadas por calidad. Una fila por fila de origen,
+      con dq_errors, dq_primary_rule e is_valid.
+
+  - name: stg_erp__carrier_settlements_valid
+    description: >
+      Liquidaciones válidas. Grano: una fila por settlement_line_id, es decir,
+      envío × carrier × concepto. Conserva el id de envío, columnas de negocio,
+      los cinco metadatos y copy_rank; los huérfanos no se descartan.
+    columns:
+      - name: settlement_line_id
+        description: "Identificador natural de la línea de liquidación; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: shipment_id
+        description: "Envío liquidado; padre de staging con aviso si aún no ha llegado."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_tms__shipments_valid')
+                field: shipment_id
+              config:
+                severity: warn
+
+  - name: stg_erp__shipment_costs
+    description: >
+      Costos de flota propia tipados desde raw.shipment_costs sin filtrar por
+      ejecución. Una fila por fila de origen, con copy_rank por
+      shipment_cost_id y los cinco metadatos de carga.
+
+  - name: stg_erp__shipment_costs_validated
+    description: >
+      Costos de envío clasificados por calidad. Una fila por fila de origen,
+      con dq_errors, dq_primary_rule e is_valid.
+
+  - name: stg_erp__shipment_costs_valid
+    description: >
+      Costos de envío válidos. Grano: una fila por shipment_cost_id, es decir,
+      envío × componente. Conserva el id de envío, columnas de negocio, los
+      cinco metadatos y copy_rank; los huérfanos no se descartan.
+    columns:
+      - name: shipment_cost_id
+        description: "Identificador natural del costo de envío; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: shipment_id
+        description: "Envío al que se imputa el costo; padre de staging con aviso si falta."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_tms__shipments_valid')
+                field: shipment_id
+              config:
+                severity: warn
