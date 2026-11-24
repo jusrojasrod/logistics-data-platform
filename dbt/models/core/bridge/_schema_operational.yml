@@ -1,0 +1,70 @@
+version: 2
+
+# Esquema de tests del puente envío–viaje del corte operativo TMS. No sustituye
+# ni modifica esquemas vigentes. El grano compuesto se comprueba con la
+# combinación única de sus tres columnas, patrón ya usado en el staging TMS.
+
+models:
+  - name: bridge_shipment_trip
+    description: >
+      Puente envío–viaje. Grano: una fila por tramo de envío, identificada por
+      la combinación de (shipment_id, trip_id, leg_sequence). loaded_km,
+      weight_kg y volume_m3 se conservan de stg_tms__shipment_legs_valid.
+      empty_km_allocated prorratea el vacío de fact_trips por el reparto de
+      §5.4 y allocation_method guarda el criterio aplicado. Sin montos: el
+      costo permanece en fact_shipment_costs y no se duplica aquí.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - shipment_id
+              - trip_id
+              - leg_sequence
+    columns:
+      - name: shipment_id
+        description: "Envío del tramo; parte de la clave del grano."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fact_shipments')
+                field: shipment_id
+              config:
+                severity: warn
+      - name: trip_id
+        description: "Viaje del tramo; parte de la clave del grano."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fact_trips')
+                field: trip_id
+              config:
+                severity: warn
+      - name: leg_sequence
+        description: "Secuencia del tramo dentro del envío y el viaje; clave del grano."
+        data_tests:
+          - not_null
+      - name: loaded_km
+        description: "Kilómetros cargados del tramo, sin redistribuir."
+        data_tests:
+          - not_null
+      - name: weight_kg
+        description: "Peso del tramo usado como base del reparto por §5.4."
+      - name: volume_m3
+        description: "Volumen del tramo, base de reparto cuando el peso es cero."
+      - name: empty_km_allocated
+        description: "Kilómetros vacíos del viaje prorrateados al tramo por §5.4."
+        data_tests:
+          - not_null
+      - name: allocation_method
+        description: "Criterio de reparto aplicado; una de las cuatro etiquetas canónicas."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - single_shipment
+                  - weight_x_loaded_km
+                  - volume_x_loaded_km
+                  - equal
