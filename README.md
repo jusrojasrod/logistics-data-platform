@@ -135,6 +135,14 @@ Conteo del 2026-11-23 sobre el repositorio, con `find`, `ls`, `dbt ls --resource
 
 *Dashboard de operación en Superset: OTIF mensual sobre `mart_operations`.*
 
+![Vista Graph del DAG dag_ingest_batch en Airflow](docs/assets/screenshots/airflow_dag_ingest_batch.png)
+
+*Airflow, vista Graph de `dag_ingest_batch`: las tareas `extract_tms` y `load_erp_files`, sin dependencia entre ellas, y el panel del DAG con la programación `0 2 * * *` y la última ejecución exitosa.*
+
+![Linaje de fact_shipments en dbt docs](docs/assets/screenshots/dbt_lineage.png)
+
+*dbt docs, linaje `+fact_shipments+`: fuentes TMS y ERP, staging, dimensiones, `fact_shipments` y lo que depende de él (hechos financieros, de incidencias, ofertas y eventos, `mart_operations` y tests singulares).*
+
 ## Indicadores
 
 | Indicador | Cálculo | Medición |

@@ -135,6 +135,14 @@ Count of 2026-11-23 over the repository, with `find`, `ls`, `dbt ls --resource-t
 
 *Operations dashboard in Superset: monthly OTIF over `mart_operations`.*
 
+![Graph view of the dag_ingest_batch DAG in Airflow](assets/screenshots/airflow_dag_ingest_batch.png)
+
+*Airflow, Graph view of `dag_ingest_batch`: the `extract_tms` and `load_erp_files` tasks, with no dependency between them, and the DAG panel with the `0 2 * * *` schedule and the last successful run.*
+
+![Lineage of fact_shipments in dbt docs](assets/screenshots/dbt_lineage.png)
+
+*dbt docs, `+fact_shipments+` lineage: TMS and ERP sources, staging, dimensions, `fact_shipments` and what depends on it (financial, incident, tender and event facts, `mart_operations` and singular tests).*
+
 ## Indicators
 
 | Indicator | Calculation | Measurement |
