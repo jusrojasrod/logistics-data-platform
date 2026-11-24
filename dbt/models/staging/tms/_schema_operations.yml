@@ -1,0 +1,294 @@
+version: 2
+
+# Grano y tests genéricos del staging operativo TMS. Los 24 modelos (ocho
+# entidades × base, _validated y _valid) se documentan aquí sin editar los
+# esquemas vigentes. Los modelos base y _validated pueden contener copias
+# repetidas del origen y se documentan sin tests de clave; la unicidad se
+# declara solo en los modelos _valid, ya deduplicados por copy_rank = 1 y
+# filtrados por calidad. DQ-004 se instancia como relationships en warn:
+# shipment_id contra fact_shipments en tramos, paradas y eventos de envío, y
+# carrier_id contra dim_carrier en vehículos, conductores y viajes. El registro
+# con padre ausente se conserva en _valid y se descarta aguas abajo, sin
+# rechazar filas aquí.
+
+models:
+  - name: stg_tms__vehicles
+    description: >
+      Vehículos tipados desde raw.vehicles sin filtrar por ejecución ni por
+      fecha. Una fila por fila de origen, con copy_rank por vehicle_id y los
+      cinco metadatos de carga.
+
+  - name: stg_tms__vehicles_validated
+    description: >
+      Vehículos tipados clasificados por calidad. Una fila por fila de origen,
+      con dq_errors ordenado por prioridad, dq_primary_rule e is_valid.
+
+  - name: stg_tms__vehicles_valid
+    description: >
+      Vehículos válidos. Grano: una fila por vehicle_id. Conserva carrier_id,
+      columnas de negocio, los cinco metadatos y copy_rank; los huérfanos de
+      transportista no se descartan aquí.
+    columns:
+      - name: vehicle_id
+        description: "Identificador natural del vehículo; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: carrier_id
+        description: >
+          Transportista del vehículo; se comprueba contra dim_carrier con aviso
+          si el id no existe (DQ-004).
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_carrier')
+                field: carrier_id
+              config:
+                severity: warn
+
+  - name: stg_tms__drivers
+    description: >
+      Conductores tipados desde raw.drivers sin filtrar por ejecución ni por
+      fecha. Una fila por fila de origen, con copy_rank por driver_id y los
+      cinco metadatos de carga.
+
+  - name: stg_tms__drivers_validated
+    description: >
+      Conductores tipados clasificados por calidad. Una fila por fila de
+      origen, con dq_errors ordenado por prioridad, dq_primary_rule e is_valid.
+
+  - name: stg_tms__drivers_valid
+    description: >
+      Conductores válidos. Grano: una fila por driver_id. Conserva carrier_id,
+      columnas de negocio, los cinco metadatos y copy_rank; los huérfanos de
+      transportista no se descartan aquí.
+    columns:
+      - name: driver_id
+        description: "Identificador natural del conductor; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: carrier_id
+        description: >
+          Transportista del conductor; se comprueba contra dim_carrier con
+          aviso si el id no existe (DQ-004).
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_carrier')
+                field: carrier_id
+              config:
+                severity: warn
+
+  - name: stg_tms__trips
+    description: >
+      Viajes tipados desde raw.trips sin filtrar por ejecución ni por fecha.
+      Una fila por fila de origen, con copy_rank por trip_id y los cinco
+      metadatos de carga.
+
+  - name: stg_tms__trips_validated
+    description: >
+      Viajes tipados clasificados por calidad. Una fila por fila de origen, con
+      dq_errors ordenado por prioridad, dq_primary_rule e is_valid.
+
+  - name: stg_tms__trips_valid
+    description: >
+      Viajes válidos. Grano: una fila por trip_id. Conserva carrier_id,
+      columnas de negocio, los cinco metadatos y copy_rank; los huérfanos de
+      transportista no se descartan aquí.
+    columns:
+      - name: trip_id
+        description: "Identificador natural del viaje; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: carrier_id
+        description: >
+          Transportista del viaje; se comprueba contra dim_carrier con aviso si
+          el id no existe (DQ-004).
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_carrier')
+                field: carrier_id
+              config:
+                severity: warn
+
+  - name: stg_tms__trip_legs
+    description: >
+      Tramos de viaje tipados desde raw.trip_legs sin filtrar por ejecución ni
+      por fecha. Una fila por fila de origen, con copy_rank por
+      (trip_id, leg_sequence) y los cinco metadatos de carga.
+
+  - name: stg_tms__trip_legs_validated
+    description: >
+      Tramos de viaje tipados clasificados por calidad. Una fila por fila de
+      origen, con dq_errors ordenado por prioridad, dq_primary_rule e is_valid.
+
+  - name: stg_tms__trip_legs_valid
+    description: >
+      Tramos de viaje válidos. Grano: una fila por (trip_id, leg_sequence), la
+      clave natural compuesta. Conserva columnas de negocio, los cinco
+      metadatos y copy_rank. Sin hecho propio en este corte: el tramo queda solo
+      en staging.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - trip_id
+              - leg_sequence
+    columns:
+      - name: trip_id
+        description: "Viaje al que pertenece el tramo; parte de la clave del grano."
+        data_tests:
+          - not_null
+      - name: leg_sequence
+        description: "Secuencia del tramo dentro del viaje; parte de la clave del grano."
+        data_tests:
+          - not_null
+
+  - name: stg_tms__shipment_legs
+    description: >
+      Tramos de envío tipados desde raw.shipment_legs sin filtrar por ejecución
+      ni por fecha. Una fila por fila de origen, con copy_rank por
+      (shipment_id, trip_id, leg_sequence) y los cinco metadatos de carga.
+
+  - name: stg_tms__shipment_legs_validated
+    description: >
+      Tramos de envío tipados clasificados por calidad. Una fila por fila de
+      origen, con dq_errors ordenado por prioridad, dq_primary_rule e is_valid.
+
+  - name: stg_tms__shipment_legs_valid
+    description: >
+      Tramos de envío válidos. Grano: una fila por
+      (shipment_id, trip_id, leg_sequence), la clave natural compuesta.
+      Conserva loaded_km, weight_kg, volume_m3, los cinco metadatos y
+      copy_rank; el envío huérfano no se descarta aquí. Fuente exclusiva del
+      puente envío-viaje.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - shipment_id
+              - trip_id
+              - leg_sequence
+    columns:
+      - name: shipment_id
+        description: >
+          Envío al que pertenece el tramo; se comprueba contra fact_shipments
+          con aviso si el envío aún no ha llegado (DQ-004).
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fact_shipments')
+                field: shipment_id
+              config:
+                severity: warn
+      - name: trip_id
+        description: "Viaje del tramo; parte de la clave del grano."
+        data_tests:
+          - not_null
+      - name: leg_sequence
+        description: "Secuencia del tramo; parte de la clave del grano."
+        data_tests:
+          - not_null
+
+  - name: stg_tms__shipment_stops
+    description: >
+      Paradas de envío tipadas desde raw.shipment_stops sin filtrar por
+      ejecución ni por fecha. Una fila por fila de origen, con copy_rank por
+      (shipment_id, stop_sequence) y los cinco metadatos de carga.
+
+  - name: stg_tms__shipment_stops_validated
+    description: >
+      Paradas de envío tipadas clasificadas por calidad. Una fila por fila de
+      origen, con dq_errors ordenado por prioridad, dq_primary_rule e is_valid.
+
+  - name: stg_tms__shipment_stops_valid
+    description: >
+      Paradas de envío válidas. Grano: una fila por (shipment_id,
+      stop_sequence), la clave natural compuesta. Conserva columnas de negocio,
+      los cinco metadatos y copy_rank; el envío huérfano no se descarta aquí.
+      Sin hecho propio en este corte: la parada queda solo en staging.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - shipment_id
+              - stop_sequence
+    columns:
+      - name: shipment_id
+        description: >
+          Envío al que pertenece la parada; se comprueba contra fact_shipments
+          con aviso si el envío aún no ha llegado (DQ-004).
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fact_shipments')
+                field: shipment_id
+              config:
+                severity: warn
+      - name: stop_sequence
+        description: "Secuencia de la parada; parte de la clave del grano."
+        data_tests:
+          - not_null
+
+  - name: stg_tms__shipment_events
+    description: >
+      Eventos de envío tipados desde raw.shipment_events sin filtrar por
+      ejecución ni por fecha. Una fila por fila de origen, con copy_rank por
+      event_id y los cinco metadatos de carga.
+
+  - name: stg_tms__shipment_events_validated
+    description: >
+      Eventos de envío tipados clasificados por calidad. Una fila por fila de
+      origen, con dq_errors ordenado por prioridad, dq_primary_rule e is_valid.
+
+  - name: stg_tms__shipment_events_valid
+    description: >
+      Eventos de envío válidos. Grano: una fila por event_id, con su event_ts y
+      medidas. Conserva shipment_id, columnas de negocio, los cinco metadatos y
+      copy_rank; el envío huérfano no se descarta aquí.
+    columns:
+      - name: event_id
+        description: "Identificador natural del evento; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: shipment_id
+        description: >
+          Envío al que pertenece el evento; se comprueba contra fact_shipments
+          con aviso si el envío aún no ha llegado (DQ-004).
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fact_shipments')
+                field: shipment_id
+              config:
+                severity: warn
+
+  - name: stg_tms__fuel_transactions
+    description: >
+      Compras de combustible tipadas desde raw.fuel_transactions sin filtrar
+      por ejecución ni por fecha. Una fila por fila de origen, con copy_rank
+      por fuel_txn_id y los cinco metadatos de carga.
+
+  - name: stg_tms__fuel_transactions_validated
+    description: >
+      Compras de combustible tipadas clasificadas por calidad. Una fila por
+      fila de origen, con dq_errors ordenado por prioridad, dq_primary_rule e
+      is_valid. DQ-010 descarta las que no están en COP.
+
+  - name: stg_tms__fuel_transactions_valid
+    description: >
+      Compras de combustible válidas en COP. Grano: una fila por fuel_txn_id,
+      con su txn_ts y medidas. Conserva claves de viaje, vehículo y conductor,
+      columnas de negocio, los cinco metadatos y copy_rank.
+    columns:
+      - name: fuel_txn_id
+        description: "Identificador natural de la compra; clave del grano."
+        data_tests:
+          - unique
+          - not_null

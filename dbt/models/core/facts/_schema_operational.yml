@@ -1,0 +1,118 @@
+version: 2
+
+# Esquema de tests de los hechos operativos del corte TMS. No sustituye ni
+# modifica los esquemas vigentes de core/facts. Declara el grano de §3.2 de
+# cada hecho, la clave natural que lo identifica y las claves foráneas con
+# aviso: las claves de dimensión se resuelven desde staging y el aviso
+# documenta la integridad referencial sin rechazar filas.
+
+models:
+  - name: fact_shipment_events
+    description: >
+      Hecho de eventos de envío. Grano: una fila por evento válido (event_id),
+      con fecha de negocio event_ts. shipment_id se une con left join a
+      fact_shipments para conservar eventos cuyo envío aún no llegó; la
+      integridad se avisa, sin descartar filas. Sin partición ni versión.
+    columns:
+      - name: event_id
+        description: "Identificador natural del evento; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: shipment_id
+        description: "Envío del evento; se comprueba contra fact_shipments en aviso."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fact_shipments')
+                field: shipment_id
+              config:
+                severity: warn
+      - name: event_ts
+        description: "Fecha de negocio del evento."
+        data_tests:
+          - not_null
+
+  - name: fact_trips
+    description: >
+      Hecho de viajes. Grano: una fila por viaje válido (trip_id), con fecha de
+      negocio start_ts. trip_type (delivery/repositioning) expone el criterio
+      de reparto de §5.4; las claves de vehículo y conductor se resuelven por
+      fecha de negocio contra la vigencia de sus dimensiones, con fallback a
+      la versión más antigua. Sin partición ni versión.
+    columns:
+      - name: trip_id
+        description: "Identificador natural del viaje; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: trip_type
+        description: "Tipo de viaje (delivery/repositioning), usado por el reparto de §5.4."
+        data_tests:
+          - not_null
+      - name: start_ts
+        description: "Fecha de negocio del viaje."
+        data_tests:
+          - not_null
+      - name: vehicle_key
+        description: "Versión de vehículo resuelta por point-in-time."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_vehicle')
+                field: vehicle_key
+              config:
+                severity: warn
+      - name: driver_key
+        description: "Versión de conductor resuelta por point-in-time."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_driver')
+                field: driver_key
+              config:
+                severity: warn
+
+  - name: fact_fuel_transactions
+    description: >
+      Hecho de compras de combustible. Grano: una fila por compra válida
+      (fuel_txn_id), con fecha de negocio txn_ts. Las claves de vehículo y
+      conductor se resuelven por point-in-time; DQ-010 dejó en staging solo
+      las compras en COP. Sin partición, versión ni conversión de moneda.
+    columns:
+      - name: fuel_txn_id
+        description: "Identificador natural de la compra; clave del grano."
+        data_tests:
+          - unique
+          - not_null
+      - name: trip_id
+        description: "Viaje de la compra; se comprueba contra fact_trips en aviso."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fact_trips')
+                field: trip_id
+              config:
+                severity: warn
+      - name: txn_ts
+        description: "Fecha de negocio de la compra."
+        data_tests:
+          - not_null
+      - name: vehicle_key
+        description: "Versión de vehículo resuelta por point-in-time."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_vehicle')
+                field: vehicle_key
+              config:
+                severity: warn
+      - name: driver_key
+        description: "Versión de conductor resuelta por point-in-time."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_driver')
+                field: driver_key
+              config:
+                severity: warn

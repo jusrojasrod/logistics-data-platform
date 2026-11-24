@@ -779,6 +779,8 @@ tms.carrier_tenders   ─► raw.carrier_tenders
 tms.carrier_incidents ─► raw.carrier_incidents
 ```
 
+Nota: de esas diez tablas, las ocho de flota y operación distintas de `carrier_tenders` y `carrier_incidents` ya tienen staging y modelos en `core`; sus claves, granos y linaje están en §15. Las dos de incidencias y ofertas se documentan en §14.
+
 Las nueve tablas ERP y CRM nuevas aterrizan en `raw` desde sus archivos y todavía no tienen staging ni modelos en dbt. Cada una recibe su archivo principal y, en una carga posterior, su archivo tardío `late/<tabla>_late.csv`:
 
 ```text
@@ -1463,3 +1465,128 @@ fact_shipments + dim_carrier ─► los dos hechos (shipment_id por unión inter
 ```
 
 Los seis modelos de staging son vistas; los dos hechos y `quarantine.carrier_performance_items` son tablas que se reconstruyen en cada `dbt build`. Como en el resto del proyecto, `information_schema` muestra sus columnas como nulables: las garantías de unicidad y no nulidad salen de la lógica de los modelos y de los tests de dbt. El linaje API de incidencias (§11 y §12) queda intacto y no alimenta estos hechos.
+
+## 15. Core operativo (flota, viajes y eventos)
+
+Este corte convierte las ocho entidades operativas del TMS aún no modeladas, aterrizadas en `raw` por watermark de `updated_at` (§2.9 a §2.16), en dos dimensiones con historia, tres hechos canónicos y un puente envío–viaje. Lee solo la vía por lotes: no modifica `fact_shipments`, sus tests ni sus dimensiones, los hechos financieros (§13), los hechos de incidencias y ofertas (§14), el linaje API (§11 y §12) ni los contratos de `raw`. Las paradas de envío y los tramos de viaje quedan solo en staging, sin hecho propio. Todos los importes se expresan en `COP`, sin conversión de moneda; el puente no guarda montos. El umbral de partición de 10 M filas de §3.2 está por medir, y también la tasa de rechazo de la cuarentena operativa.
+
+### 15.1 Fuentes y claves naturales
+
+La fuente dbt `tms_operations`, declarada en `dbt/models/staging/tms/_sources_operations.yml`, lee las ocho tablas del esquema `raw`; no redeclara la fuente `tms` de maestros y envíos ni la de incidencias y ofertas, y no declara la fuente `api`. No hay tests de fuente: la calidad se clasifica en staging y la cuarentena conserva los rechazos.
+
+| Entidad | Tabla `raw` | Clave natural | Columnas de negocio |
+|---|---|---|---|
+| Vehículos | `raw.vehicles` | `vehicle_id` | §2.9 |
+| Conductores | `raw.drivers` | `driver_id` | §2.10 |
+| Viajes | `raw.trips` | `trip_id` | §2.11 |
+| Tramos de viaje | `raw.trip_legs` | `(trip_id, leg_sequence)` | §2.12 |
+| Tramos de envío | `raw.shipment_legs` | `(shipment_id, trip_id, leg_sequence)` | §2.13 |
+| Paradas de envío | `raw.shipment_stops` | `(shipment_id, stop_sequence)` | §2.14 |
+| Eventos de envío | `raw.shipment_events` | `event_id` | §2.15 |
+| Compras de combustible | `raw.fuel_transactions` | `fuel_txn_id` | §2.16 |
+
+Se lee todo `raw` sin filtrar por `run_id` ni por fecha de negocio: las filas publicadas después de su fecha de negocio por el retraso de disponibilidad del envío (§1.1) llegan en la extracción siguiente y no se descartan. Los cinco metadatos de ejecución (§2.1) se propagan por las tres capas de staging y por los modelos de `core`. Las copias repetidas por clave natural no se eliminan en `raw`: se marcan en staging.
+
+### 15.2 Staging operativo
+
+Cada entidad tiene tres modelos en `dbt/models/staging/tms/`, todos vistas en el esquema `stg`:
+
+| Capa | Modelo | Qué hace |
+|---|---|---|
+| Tipado | `stg_tms__<entidad>` | Tipa la tabla `raw` sin borrar filas y calcula `copy_rank = row_number() over (partition by <clave natural> order by ingested_at desc, source_file_hash desc)`. Conserva las columnas de negocio y los cinco metadatos |
+| Clasificación | `stg_tms__<entidad>_validated` | Añade `dq_errors` (arreglo de texto en orden de prioridad), `dq_primary_rule` e `is_valid` |
+| Válidos | `stg_tms__<entidad>_valid` | Filas con `is_valid` y `copy_rank = 1`, con la clave natural, las columnas de negocio, los metadatos y `copy_rank`, sin las columnas de clasificación |
+
+`copy_rank = 1` conserva la copia más reciente de cada clave; las copias sobrantes se descartan por deduplicación, no se cuarentenan. No se filtra por `run_id`, de modo que las publicaciones posteriores reciben el mismo tratamiento aunque lleguen en cargas distintas. Los registros con padre ausente no se descartan en staging: permanecen en `_valid`, quedan fuera de los hechos aguas abajo y se recuperan en la construcción siguiente; los tests `relationships` contra sus padres solo avisan (DQ-004, §15.7). La regla DQ-010, evaluada solo sobre `currency_code` de `stg_tms__fuel_transactions_validated`, deja `dq_errors` vacío e `is_valid = true` en las otras siete entidades para toda fila (§15.7). Los tramos de viaje y las paradas de envío no tienen hecho propio: se documentan únicamente en sus tres modelos de staging, y `stg_tms__shipment_legs_valid` es la fuente exclusiva del puente.
+
+### 15.3 Dimensiones con historia
+
+`core.dim_vehicle` y `core.dim_driver` (esquema `core`, tablas, `dbt/models/core/dimensions/dim_vehicle.sql` y `dim_driver.sql`) son dimensiones SCD2: una fila por versión de entidad, con los atributos de negocio de su `_valid`. La clave sustituta de la versión es `vehicle_key = md5(vehicle_id || '|' || valid_from)` en vehículos y `driver_key = md5(driver_id || '|' || valid_from)` en conductores. No sustituyen a `dim_customer`, `dim_carrier`, `dim_route`, `dim_service_type` ni `dim_tariff`, y sus claves publicadas no cambian.
+
+| Columna | Descripción |
+|---|---|
+| `vehicle_key` / `driver_key` | Clave sustituta de la versión, única y no nula |
+| `vehicle_id` / `driver_id` | Identificador natural; se repite entre versiones |
+| `valid_from` | Inicio de vigencia, inclusive: `ingested_at` del catálogo, porque la fuente no trae vigencia; en un inferido, la fecha del hecho que lo observó por primera vez (§5.2) |
+| `valid_to` | Fin de vigencia, exclusivo; el centinela `9999-12-31` representa la versión vigente |
+| `is_current` | Describe la versión; no se usa para atribuir historia |
+| `version` | Número de versión SCD2; vale `1` en este corte |
+| `is_inferred` | Marca de miembro inferido; DQ-015 vigila su antigüedad como incidente (§15.7) |
+
+Los miembros inferidos se derivan solo del staging (`stg_tms__trips_valid` y `stg_tms__fuel_transactions_valid`): un id observado en un hecho sin fila en el catálogo recibe atributos de texto `'UNKNOWN'`, medidas nulas y `valid_from` igual a la primera fecha observada. Cuando llega el catálogo real, la fila se completa in-place con los atributos verdaderos e `is_inferred = false`, sin crear una segunda versión ni cambiar clave o vigencia. Las dimensiones no leen hechos publicados para no cerrar un ciclo en dbt. La PII del catálogo de conductores no se enmascara en esta capa (§2.10).
+
+Los hechos resuelven la vigencia por fecha de negocio con `valid_from <= <fecha> < valid_to` y, si la fecha precede a todas las versiones, toman la versión más antigua conocida; nunca usan `is_current`. Como todas las fechas de negocio del dataset son anteriores a la ingesta del catálogo, en la práctica la resolución recae en esa versión más antigua.
+
+### 15.4 Hechos operativos
+
+Los tres hechos están en el esquema `core`, se materializan como tablas que se reconstruyen en cada `dbt build` y declaran su grano en `dbt/models/core/facts/_schema_operational.yml`.
+
+| Hecho | Grano | Clave del grano | Columnas principales |
+|---|---|---|---|
+| `core.fact_shipment_events` | Un evento válido; fecha de negocio `event_ts` | `event_id` (única y no nula) | `shipment_id`, `event_type`, `location_city`, `latitude`, `longitude`, `severity` y los cinco metadatos de ejecución (§2.1) |
+| `core.fact_trips` | Un viaje válido; fecha de negocio `start_ts` | `trip_id` (única y no nula) | `carrier_id`, `carrier_key = md5(carrier_id)`, `vehicle_id`, `driver_id`, `trip_type` (`delivery`/`repositioning`), `vehicle_key` y `driver_key` resueltos por punto en el tiempo, `origin_city`, `end_ts`, `distance_km`, `empty_km`, `stopped_minutes`, `fuel_gallons` y los cinco metadatos |
+| `core.fact_fuel_transactions` | Una compra válida; fecha de negocio `txn_ts` | `fuel_txn_id` (única y no nula) | `trip_id`, `vehicle_id`, `driver_id`, `vehicle_key` y `driver_key` resueltos por punto en el tiempo, `station_city`, `gallons`, `price_per_gallon_amount`, `total_amount`, `currency_code = 'COP'`, `odometer_km` y los cinco metadatos |
+
+Las medidas son las de §9.3. Los tres hechos declaran su grano y no llevan partición ni versión: el umbral de 10 M filas de §3.2 está por medir. `shipment_id` se une con unión izquierda a `fact_shipments` en eventos, para conservar los eventos cuyo envío aún no llegó; la integridad se comprueba con tests `relationships` en aviso, sin rechazar filas (DQ-004, §15.7). `trip_type` se expone en `fact_trips` para el reparto del puente: los viajes `repositioning` no llevan envíos y su kilómetro vacío queda como deadhead no asignado en ese hecho (§5.4.6). No hay KPIs, scorecard ni cálculo de rendimiento de combustible en este corte.
+
+### 15.5 Puente envío–viaje
+
+`core.bridge_shipment_trip` (esquema `core`, tabla, `dbt/models/core/bridge/bridge_shipment_trip.sql`) tiene una fila por tramo de envío, con grano `(shipment_id, trip_id, leg_sequence)` leído de `stg_tms__shipment_legs_valid`.
+
+| Columna | Descripción |
+|---|---|
+| `shipment_id`, `trip_id`, `leg_sequence` | Clave compuesta del grano, única y no nula |
+| `loaded_km`, `weight_kg`, `volume_m3` | Medidas de `shipment_legs`, conservadas de la fuente sin redistribuir |
+| `empty_km_allocated` | Kilómetros vacíos de `fact_trips` prorrateados al tramo según §5.4 |
+| `allocation_method` | Criterio de reparto aplicado: `single_shipment`, `weight_x_loaded_km`, `volume_x_loaded_km` o `equal`, nunca nulo |
+
+El reparto sigue §5.4: un envío único en el viaje concentra toda la cuota; si hay varios, se usa `weight_kg × loaded_km`, o `volume_m3 × loaded_km` cuando el peso es todo cero, o un reparto igualitario cuando ambos son cero. La misma base prorratea `empty_km` de `fact_trips`. Los viajes `repositioning` no generan filas en el puente porque no tienen tramos de envío, de modo que su vacío permanece como deadhead no asignado en `fact_trips` (§5.4.6). La suma de `loaded_km` del puente se reconcilia con la de `stg_tms__shipment_legs_valid` para las mismas claves. El puente no lleva `allocated_cost_amount`: el costo sigue en `fact_shipment_costs` y no se duplica aquí.
+
+### 15.6 Cuarentena operativa
+
+`quarantine.operational_items` (esquema `quarantine`, tabla) reúne en una tabla las filas rechazadas de las ocho entidades. Tiene una fila por fila rechazada, no por regla incumplida, y emite las ocho columnas canónicas de §6:
+
+| Columna | Descripción |
+|---|---|
+| `quarantine_id` | `md5` de `source_table`, `run_id`, clave natural, `source_file_hash` y `copy_rank` unidos con `\|` |
+| `source_table` | Entidad de origen: `raw.vehicles`, `raw.drivers`, `raw.trips`, `raw.trip_legs`, `raw.shipment_legs`, `raw.shipment_stops`, `raw.shipment_events` o `raw.fuel_transactions`; nunca `raw.shipments` |
+| `rule_id` | Regla principal de la fila, igual a `dq_primary_rule`; en el perfil `demo` solo puede aparecer DQ-010 |
+| `reason` | Regla principal y lista de todas las reglas incumplidas |
+| `payload` | Objeto `jsonb` con el nombre y el valor de la clave natural, los cinco metadatos, `copy_rank`, `dq_errors` y `dq_primary_rule` |
+| `detected_at` | Instante en que la construcción detectó el rechazo |
+| `run_id` | Carga de `raw` a la que pertenece la fila rechazada |
+| `severity` | Severidad del rechazo; hoy siempre `high` |
+
+Junto con los ocho `stg_tms__*_valid` forma la partición exacta de cada entidad: por `run_id` y clave natural, cada fila de `raw` está en válidos o en cuarentena, nunca en los dos ni en ninguno, y las copias repetidas colapsan en una clave. Lo comprueba `assert_operational_partition`. Con el perfil `demo` las ocho entidades no tienen rechazos por moneda (todo `COP`), así que la tabla puede quedar vacía y la tasa de rechazo está por medir; la cobertura de las ocho entidades se verifica en la definición del modelo, que une los ocho `_validated`. No se modifica `quarantine.shipments` (§6) ni ninguna otra cuarentena.
+
+### 15.7 Reglas de calidad aplicadas
+
+No se añaden reglas al catálogo: siguen las mismas de §6 y §8, con los mismos conteos de reglas, KPIs y DAGs. A continuación se listan las que afectan a este corte.
+
+| Regla | Ámbito | Qué comprueba | Efecto |
+|---|---|---|---|
+| DQ-004 | Los `_valid` y los hechos | `shipment_id` existe en `fact_shipments`; `carrier_id` o `carrier_key` existe en `dim_carrier` | Aviso (`severity: warn`) |
+| DQ-006a | `assert_operational_freshness` | Frescura de la última carga de las ocho fuentes TMS, con el umbral existente de 26 h | Aviso (`severity: warn`), no detiene la construcción |
+| DQ-010 | `stg_tms__fuel_transactions_validated` | `currency_code` no nulo e igual a `COP` | Rechaza, con `rule_id = DQ-010` en la cuarentena |
+| DQ-015 | `assert_operational_inferred_age` | Ningún inferido con antigüedad superior a 7 días en `dim_vehicle` ni `dim_driver` | Incidente (`severity: error`) |
+
+DQ-005 no se aplica a este corte: ninguna de las ocho entidades ni los tres hechos nuevos tiene `customer_id`, y ningún grano de §3.2 ni de §9.3 lo exige. Los huérfanos transitorios no son un rechazo de calidad: se mantienen en `_valid`, quedan fuera del hecho mientras no exista su padre y se recuperan en la construcción siguiente. `dq_errors` conserva el orden de prioridad declarado en cada modelo validado, `dq_primary_rule` es su primer elemento e `is_valid` es `true` cuando la lista está vacía. Los tests singulares del corte son `assert_operational_partition`, `assert_operational_grain`, `assert_operational_dimension_keys`, `assert_operational_bridge`, `assert_operational_inferred_age` y `assert_operational_freshness`. Los cuatro primeros emiten una fila de fallo si su población de origen está vacía, para no pasar en vacío; la cuarentena y los inferidos pueden estar vacíos y se verifica su definición.
+
+### 15.8 Linaje
+
+```text
+raw.vehicles          ─► stg_tms__vehicles          ─► stg_tms__vehicles_validated          ─► stg_tms__vehicles_valid          ─► core.dim_vehicle
+raw.drivers           ─► stg_tms__drivers           ─► stg_tms__drivers_validated           ─► stg_tms__drivers_valid           ─► core.dim_driver
+raw.trips             ─► stg_tms__trips             ─► stg_tms__trips_validated             ─► stg_tms__trips_valid             ─► core.fact_trips
+raw.trip_legs         ─► stg_tms__trip_legs         ─► stg_tms__trip_legs_validated         ─► stg_tms__trip_legs_valid         ─► (solo staging)
+raw.shipment_legs     ─► stg_tms__shipment_legs     ─► stg_tms__shipment_legs_validated     ─► stg_tms__shipment_legs_valid     ─► core.bridge_shipment_trip
+raw.shipment_stops    ─► stg_tms__shipment_stops    ─► stg_tms__shipment_stops_validated    ─► stg_tms__shipment_stops_valid    ─► (solo staging)
+raw.shipment_events   ─► stg_tms__shipment_events   ─► stg_tms__shipment_events_validated   ─► stg_tms__shipment_events_valid   ─► core.fact_shipment_events
+raw.fuel_transactions ─► stg_tms__fuel_transactions ─► stg_tms__fuel_transactions_validated ─► stg_tms__fuel_transactions_valid ─► core.fact_fuel_transactions
+
+cada *_validated ─► quarantine.operational_items (solo filas rechazadas)
+stg_tms__trips_valid + stg_tms__fuel_transactions_valid ─► claves observadas de dim_vehicle y dim_driver (inferidos)
+fact_shipments + dim_vehicle + dim_driver + dim_carrier ─► los tres hechos y el puente (claves; integridad en aviso)
+```
+
+Los 24 modelos de staging son vistas; las dos dimensiones, los tres hechos, el puente y `quarantine.operational_items` son tablas que se reconstruyen en cada `dbt build`. Como en el resto del proyecto, `information_schema` muestra sus columnas como nulables: las garantías de unicidad y no nulidad salen de la lógica de los modelos y de los tests de dbt. El linaje de incidencias y ofertas (§14) y el de la vía API (§11 y §12) quedan intactos y no alimentan estos hechos.

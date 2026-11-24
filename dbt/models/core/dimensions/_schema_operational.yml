@@ -1,0 +1,83 @@
+version: 2
+
+# Esquema de tests de las dimensiones operativas del corte TMS. No sustituye
+# ni modifica los esquemas vigentes de core/dimensions.
+
+models:
+  - name: dim_vehicle
+    description: >
+      Dimensión de vehículos con historia (SCD2). Grano: una versión de un
+      vehículo, identificada por vehicle_key = md5(vehicle_id || '|' ||
+      valid_from). valid_from se deriva de ingested_at porque el catálogo no
+      trae vigencia; los miembros inferidos usan la fecha del hecho que los
+      observó. valid_to es exclusivo con centinela 9999-12-31, version vale 1
+      e is_current describe solo la versión, nunca la atribución histórica.
+      Los inferidos llevan atributos 'UNKNOWN' y se completan in-place sin
+      cambiar clave ni vigencia cuando llega el catálogo real; DQ-015 vigila
+      su antigüedad como incidente.
+    columns:
+      - name: vehicle_key
+        description: "Clave sustituta de la versión: md5(vehicle_id || '|' || valid_from)."
+        data_tests:
+          - unique
+          - not_null
+      - name: vehicle_id
+        description: "Identificador natural del vehículo; se repite entre versiones."
+        data_tests:
+          - not_null
+      - name: valid_from
+        description: "Inicio de vigencia (inclusive): ingested_at del catálogo o event_ts del inferido."
+        data_tests:
+          - not_null
+      - name: valid_to
+        description: "Fin de vigencia (exclusivo); 9999-12-31 en la versión vigente."
+        data_tests:
+          - not_null
+      - name: is_current
+        description: "Indica si la versión es vigente; no se usa para atribuir historia."
+        data_tests:
+          - not_null
+      - name: version
+        description: "Número de versión SCD2; 1 en este corte."
+        data_tests:
+          - not_null
+      - name: is_inferred
+        description: "Marca de miembro inferido; DQ-015 vigila su antigüedad como incidente."
+        data_tests:
+          - not_null
+
+  - name: dim_driver
+    description: >
+      Dimensión de conductores con historia (SCD2), con el mismo contrato que
+      dim_vehicle y driver_key = md5(driver_id || '|' || valid_from). La PII del
+      catálogo no se enmascara en esta capa.
+    columns:
+      - name: driver_key
+        description: "Clave sustituta de la versión: md5(driver_id || '|' || valid_from)."
+        data_tests:
+          - unique
+          - not_null
+      - name: driver_id
+        description: "Identificador natural del conductor; se repite entre versiones."
+        data_tests:
+          - not_null
+      - name: valid_from
+        description: "Inicio de vigencia (inclusive): ingested_at del catálogo o event_ts del inferido."
+        data_tests:
+          - not_null
+      - name: valid_to
+        description: "Fin de vigencia (exclusivo); 9999-12-31 en la versión vigente."
+        data_tests:
+          - not_null
+      - name: is_current
+        description: "Indica si la versión es vigente; no se usa para atribuir historia."
+        data_tests:
+          - not_null
+      - name: version
+        description: "Número de versión SCD2; 1 en este corte."
+        data_tests:
+          - not_null
+      - name: is_inferred
+        description: "Marca de miembro inferido; DQ-015 vigila su antigüedad como incidente."
+        data_tests:
+          - not_null
