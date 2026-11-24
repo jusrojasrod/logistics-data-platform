@@ -17,8 +17,6 @@ Plataforma de analítica y gobierno de datos para una operación logística: ing
 
 ![Dashboard de operación en Superset con el OTIF mensual](docs/assets/screenshots/otif_monthly.png)
 
----
-
 ## Problema
 
 La operación de Nexora Logística combina flota propia y transportadores terceros. La información vive dispersa en un TMS, un ERP, un CRM, archivos de Excel y APIs externas. Los reportes se arman a mano, cada área define sus indicadores a su manera y nadie puede decir qué tan confiable es un dato ni de dónde viene.
@@ -52,22 +50,13 @@ flowchart LR
         MARTS["marts"]
         META["meta"]
     end
-    AIRFLOW{{"Airflow"}}
-    DBT{{"dbt"}}
-    SUPERSET["Superset"]
-    TMS --> BATCH
-    ERP --> BATCH
-    CRM --> BATCH
+    TMS & ERP & CRM --> BATCH
     API --> CLIENT --> MONGO --> RAW
-    BATCH --> RAW
-    BATCH --> META
-    AIRFLOW --> BATCH
-    AIRFLOW --> CLIENT
-    RAW --> STG --> CORE --> MARTS --> SUPERSET
+    BATCH --> RAW & META
+    AIRFLOW{{"Airflow"}} --> BATCH & CLIENT
+    RAW --> STG --> CORE --> MARTS --> SUPERSET["Superset"]
     STG --> QUA
-    DBT --> STG
-    DBT --> CORE
-    DBT --> MARTS
+    DBT{{"dbt"}} --> STG & CORE & MARTS
     GPS["Telemetría GPS"] -.-> RP["Streaming con Redpanda"] -.-> RAW
     CORE -.-> MKT["Marts comerciales y de gobierno"]
     SUPERSET -.-> RLS["Roles y RLS"]
@@ -105,9 +94,7 @@ Las líneas continuas funcionan hoy; las punteadas son extensiones que todavía 
 
 ## Resultados medidos
 
-Cifras copiadas de las mediciones publicadas. Describen una máquina, un volumen y unos comandos concretos, detallados en cada tabla completa.
-
-Generador TMS, publicación en `tms` y extracción a `raw`, medición del 2026-11-15 ([tabla completa](benchmarks/results/tms_generator_scale.md)):
+Cifras copiadas de las mediciones publicadas; la máquina, el volumen y los comandos están en cada tabla completa. Generador TMS, publicación en `tms` y extracción a `raw`, medición del 2026-11-15 ([tabla completa](benchmarks/results/tms_generator_scale.md)):
 
 | Métrica | Valor | Fecha | Artefacto |
 |---|---|---|---|
@@ -141,3 +128,93 @@ Conteo del 2026-11-23 sobre el repositorio, con `find`, `ls`, `dbt ls --resource
 | DAGs de Airflow | 3 |
 | Tests de pytest recogidos | 425 |
 | ADRs | 5 |
+
+## Galería
+
+![Dashboard de operación en Superset con el OTIF mensual](docs/assets/screenshots/otif_monthly.png)
+
+*Dashboard de operación en Superset: OTIF mensual sobre `mart_operations`.*
+
+## Indicadores
+
+| Indicador | Cálculo | Medición |
+|---|---|---|
+| OTIF, OTD, In Full | `mart_operations` y dashboard de operación | por medir |
+| Costo por envío, margen bruto | pendiente (los hechos existen, falta el mart) | por medir |
+| Deadhead y utilización de flota | pendiente | por medir |
+| Calidad del dato (DQ Score) | pendiente | por medir |
+| Rendimiento de consultas | consulta de referencia en `benchmarks/queries/` | por medir |
+| Escala del generador y de la ingesta batch | generación, publicación, extracción y carga | medida en [`benchmarks/results/`](benchmarks/results/) |
+
+**Por medir** significa que todavía no hay una medición publicada que respalde la cifra. El catálogo completo, con fórmula y grano, está en [`docs/02_kpi_catalog.md`](docs/02_kpi_catalog.md).
+
+## Decisiones técnicas
+
+- [ADR-001](docs/adr/ADR-001-postgresql.md): PostgreSQL como motor principal.
+- [ADR-002](docs/adr/ADR-002-medallion.md): arquitectura por capas.
+- [ADR-003](docs/adr/ADR-003-dbt.md): dbt para las transformaciones.
+- [ADR-004](docs/adr/ADR-004-airflow-3.md): Airflow 3.
+- [ADR-005](docs/adr/ADR-005-superset.md): Apache Superset como herramienta de BI.
+- **SCD2 con miembro inferido** para hechos que llegan antes que su dimensión: [`dim_vehicle`](dbt/models/core/dimensions/dim_vehicle.sql) y [`dim_driver`](dbt/models/core/dimensions/dim_driver.sql).
+- **Cuarentena con regla y motivo**, no solo tests que fallan: [`dbt/models/quarantine/`](dbt/models/quarantine).
+- **`raw` append-only**, con watermark por tabla ([`watermark.py`](src/nexora/ingestion/batch/watermark.py)) y registro de archivos por hash ([`loaders.py`](src/nexora/ingestion/batch/loaders.py)).
+- **Montos en su moneda original**, con `currency_code`: [`fact_invoices`](dbt/models/core/facts/fact_invoices.sql).
+- **Reparto en la tabla puente** de los kilómetros en vacío, sin montos que dupliquen los costos: [`bridge_shipment_trip`](dbt/models/core/bridge/bridge_shipment_trip.sql).
+
+## Hoja de ruta
+
+### Hecho
+
+- Entorno local, generador sintético e ingesta batch ([`dag_ingest_batch.py`](airflow/dags/dag_ingest_batch.py)).
+- Ingesta de APIs con aterrizaje en MongoDB, staging y core propios ([`dag_ingest_apis.py`](airflow/dags/dag_ingest_apis.py)).
+- Staging con cuarentena, core de envíos y mart de operación ([`mart_operations.sql`](dbt/models/marts/operations/mart_operations.sql)).
+- Core operativo: flota SCD2, viajes, eventos, combustible y tabla puente ([`bridge_shipment_trip.sql`](dbt/models/core/bridge/bridge_shipment_trip.sql)).
+- Core financiero, incidencias y ofertas ([`fact_invoices.sql`](dbt/models/core/facts/fact_invoices.sql), [`fact_carrier_tenders.sql`](dbt/models/core/facts/fact_carrier_tenders.sql)).
+- Dashboard de operación, CI y mediciones de escala ([`operations_overview.yaml`](dashboards/superset/dashboards/operations_overview.yaml), [`ci.yml`](.github/workflows/ci.yml), [`tms_generator_scale.md`](benchmarks/results/tms_generator_scale.md)).
+
+### En curso
+
+- Nada en desarrollo activo; lo siguiente es la primera línea de Pendiente.
+
+### Pendiente
+
+- Marts comerciales y de gobierno, KPIs financieros y scorecard de carriers.
+- Línea base de calidad (DQ Score) y de frescura, y benchmark de consultas.
+- Dashboards comercial y de gobierno, roles y RLS en Superset, acceso con Cloudflare Tunnel y Access, y el anexo documental de Power BI.
+- Gobierno de datos: catálogo y linaje en `meta`, clasificación y enmascaramiento de PII, retención por capas y matriz de accesos.
+- Despliegue en Oracle Cloud, CD, respaldos y observabilidad.
+- Extensión: streaming de telemetría GPS con Redpanda y modelo de predicción de ETA.
+
+## Inicio rápido
+
+```bash
+cp .env.example .env        # completar secretos locales
+make up                     # postgres, mongo, airflow
+make ps
+make data                   # datos sintéticos en data/demo (perfil por defecto)
+make up-bi                  # añade superset y redis
+make import-superset        # importa el dashboard versionado
+```
+
+`make data SCALE=local` genera el perfil `local` en `data/local`. La publicación en `tms`, la extracción a `raw`, la carga de archivos y la operación de dbt están en el [runbook](docs/07_runbook.md); `make dbt-build` construye y prueba los modelos. Airflow queda en `http://localhost:8080` y Superset en `http://localhost:8088`. Ningún servicio se expone fuera de la máquina local.
+
+## Estructura
+
+```text
+docs/          contexto, catálogo de KPIs, diccionario, arquitectura, gobierno, runbook, ADRs
+dbt/           modelos staging, cuarentena, core y marts; tests
+src/nexora/    generador sintético, conectores de ingesta y configuración
+airflow/       DAGs y plugins
+infra/         inicialización de Postgres, imágenes, Superset, túnel
+dashboards/    definiciones versionadas de Superset
+benchmarks/    consultas y resultados medidos
+tests/         unitarios e integración
+```
+
+## Documentación
+
+[Contexto de negocio](docs/01_business_context.md) · [Catálogo de KPIs](docs/02_kpi_catalog.md) · [Diccionario de datos](docs/03_data_dictionary.md) · [Arquitectura](docs/04_architecture.md) · [Gobierno de datos](docs/05_governance_policy.md) · [Reglas de calidad](docs/06_quality_rules.md) · [Runbook](docs/07_runbook.md)
+
+## Licencia
+
+MIT. Ver [`LICENSE`](LICENSE).
