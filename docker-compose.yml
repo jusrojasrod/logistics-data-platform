@@ -32,6 +32,7 @@ x-airflow-common: &airflow-common
     - ./src:/opt/airflow/src
     - ./data:/opt/airflow/data:ro
     - airflow-logs:/opt/airflow/logs
+    - airflow-auth:/opt/airflow/auth
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres:
@@ -203,3 +204,4 @@ volumes:
   pgdata:
   mongodata:
   airflow-logs:
+  airflow-auth:
