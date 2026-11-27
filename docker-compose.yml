@@ -150,12 +150,18 @@ services:
       <<: *airflow-env
       AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-admin}
       AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: &simple_auth_manager_users "${AIRFLOW_ADMIN_USER:-admin}:admin"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: &simple_auth_manager_passwords_file /opt/airflow/auth/simple_auth_manager_passwords.json
     restart: "no"
 
   airflow-api-server:
     <<: *airflow-common
     container_name: nexora-airflow-api
     command: api-server
+    environment:
+      <<: *airflow-env
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: *simple_auth_manager_users
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: *simple_auth_manager_passwords_file
     ports:
       - "127.0.0.1:${AIRFLOW_PORT:-8080}:8080"
     healthcheck:
@@ -177,6 +183,10 @@ services:
     <<: *airflow-common
     container_name: nexora-airflow-scheduler
     command: scheduler
+    environment:
+      <<: *airflow-env
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: *simple_auth_manager_users
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: *simple_auth_manager_passwords_file
     mem_limit: 1200m
     depends_on:
       airflow-init:
@@ -186,6 +196,10 @@ services:
     <<: *airflow-common
     container_name: nexora-airflow-dag-processor
     command: dag-processor
+    environment:
+      <<: *airflow-env
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: *simple_auth_manager_users
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: *simple_auth_manager_passwords_file
     mem_limit: 768m
     depends_on:
       airflow-init:
@@ -195,6 +209,10 @@ services:
     <<: *airflow-common
     container_name: nexora-airflow-triggerer
     command: triggerer
+    environment:
+      <<: *airflow-env
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: *simple_auth_manager_users
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: *simple_auth_manager_passwords_file
     mem_limit: 512m
     depends_on:
       airflow-init:
