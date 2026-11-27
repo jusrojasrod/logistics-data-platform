@@ -249,6 +249,25 @@ make up
 | `tms_writer` | Nada más: el publicador lee `TMS_WRITER_PASSWORD` del entorno o de `.env` en cada ejecución |
 | `dq_runner` | Nada más: ningún servicio del stack se conecta hoy con este rol |
 
+### 7.2 Acceso a la UI y la API de Airflow
+
+El usuario y la contraseña se toman de `AIRFLOW_ADMIN_USER` y `AIRFLOW_ADMIN_PASSWORD` en `.env`, sin valores por defecto publicados. Airflow usa SimpleAuthManager: el usuario configurado queda con rol `admin` y su contraseña se escribe en un archivo JSON dentro de un volumen de ejecución, fuera del repo. Las mismas credenciales valen para la interfaz web y para la API.
+
+Para entrar en la UI, abrir `http://localhost:8080` y usar esas credenciales. Para la API, obtener primero un token con el mismo usuario y contraseña:
+
+```bash
+set -a; . ./.env; set +a
+curl -sS -X POST http://localhost:8080/auth/token \
+    -H 'Content-Type: application/json' \
+    -d "{\"username\":\"$AIRFLOW_ADMIN_USER\",\"password\":\"$AIRFLOW_ADMIN_PASSWORD\"}"
+```
+
+La respuesta correcta incluye `access_token`; se envía en las peticiones siguientes como `Authorization: Bearer <token>`. Con una contraseña incorrecta la petición se rechaza y no devuelve token, así que esa misma llamada sirve para comprobar el acceso.
+
+Para rotar la contraseña, editar solo `AIRFLOW_ADMIN_PASSWORD` en `.env` y repetir `make up`. No se usa `make reset` ni se borran volúmenes: el contenedor de inicialización reescribe el archivo de contraseñas en cada arranque y la API lo relee al emitir un token. La contraseña anterior deja de funcionar; verificar el cambio repitiendo `POST /auth/token` con ambos valores.
+
+SimpleAuthManager está pensado para desarrollo: guarda las contraseñas en texto plano en un archivo de un volumen de ejecución, fuera del repo y del directorio de datos. No es un mecanismo para producción; mantener `.env` con permisos restringidos y no imprimir ni registrar credenciales ni tokens.
+
 ## 8. Instancia gratuita: inactividad
 
 Los proveedores gratuitos pueden reclamar instancias ociosas. Mitigaciones:
